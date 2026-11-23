@@ -19,6 +19,7 @@ export type {
   JobRunnerStats,
   JobStore,
   KickOptions,
+  LeasedJob,
   RescanOptions,
 } from './runner.ts'
 export { planRollups, recentCutoff, rollupMembers } from './plan.ts'

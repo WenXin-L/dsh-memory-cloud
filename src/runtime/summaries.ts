@@ -21,7 +21,7 @@ import type { EpisodeSummarizer, RollupSummarizer } from '../summarize/index.ts'
 import { JobDeferredError, parentPeriod, planRollups, rollupMembers } from '../summarize/jobs/index.ts'
 import type { RollupPlan } from '../summarize/jobs/index.ts'
 import { errorMessage } from './host.ts'
-import { EMPTY_EPISODE_ERROR } from './sources.ts'
+import { EMPTY_EPISODE_ERROR, isEmptyEpisode } from './sources.ts'
 
 /** Episodes that ended within this many days stay out of rollups. */
 export const KEEP_RECENT_DAYS = 7
@@ -60,7 +60,7 @@ export interface SummaryServiceDeps {
 export interface SummaryService {
   readonly summarizer: EpisodeSummarizer
   readonly rollups: RollupSummarizer
-  /** The job runner's `summarizeEpisode`: a no-op for missing, open, or summarized episodes. */
+  /** The job runner's `summarizeEpisode`: a no-op for missing, open, summarized, or empty episodes. */
   summarizeEpisode(scope: ScopeId, episode: EpisodeId, signal: AbortSignal): Promise<void>
   /** The job runner's `buildRollup`: a no-op when the period has no members or already has a rollup. */
   buildRollup(scope: ScopeId, period: RollupPeriod, signal: AbortSignal): Promise<void>
@@ -149,7 +149,7 @@ export function createSummaryService(deps: SummaryServiceDeps): SummaryService {
 
     async summarizeEpisode(scope, id, signal) {
       const meta = (await store.readIndex(scope)).episodes.find(episode => episode.id === id)
-      if (meta === undefined || meta.status === 'open' || meta.status === 'summarized') return
+      if (meta === undefined || meta.status === 'open' || meta.status === 'summarized' || isEmptyEpisode(meta)) return
       const route = await readyRoute()
       const records = await readAllRaw(scope, id)
       signal.throwIfAborted()

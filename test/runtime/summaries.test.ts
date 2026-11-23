@@ -99,6 +99,17 @@ describe('summary jobs', () => {
     expect(isEmptyEpisode(meta)).toBe(true)
   })
 
+  it('leaves an episode already marked empty alone when it is queued again', async () => {
+    const { root, store, service } = await setup([])
+    const id = await sealed(store, OWNER_SCOPE, NOW - DAY, [])
+    await service.summarizeEpisode(OWNER_SCOPE, id, new AbortController().signal)
+    const marked = (await store.readIndex(OWNER_SCOPE)).episodes.find(episode => episode.id === id)
+    await service.summarizeEpisode(OWNER_SCOPE, id, new AbortController().signal)
+    expect((await store.readIndex(OWNER_SCOPE)).episodes.find(episode => episode.id === id)).toEqual(marked)
+    const log = (await readFile(join(root, 'logs', 'summarizer.jsonl'), 'utf8')).trim().split('\n')
+    expect(log).toHaveLength(1)
+  })
+
   it('defers instead of failing while the host is going away or no model route exists', async () => {
     let ready = false
     let route: SummaryRoute = { provider: 'fake', model: 'fake-1' }

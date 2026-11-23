@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto'
 import type { Clock, EpisodeId, EpisodeMeta, JobQuota, MemoryIndex, MemoryStore, Millis, QueuedJob, RollupPeriod, ScopeId, StoreState } from '../../contracts.ts'
+import { isEmptyEpisode } from '../../runtime/sources.ts'
 import { localDayKey, periodId, startOfNextLocalDay } from './periods.ts'
 import { systemTimers, type JobTimers } from './timers.ts'
 
@@ -14,8 +16,18 @@ export type JobStore = Pick<MemoryStore, 'listScopes' | 'readIndex' | 'readState
 /** Jobs started on one local day, persisted beside the queue so restarts keep counting. */
 export type JobQuotaLedger = JobQuota
 
-/** `state.json` as this module writes it, including the quota ledger. */
-export type JobRunnerState = StoreState
+/** `state.json` as this module writes it, including the quota ledger and the rollups it gave up on. */
+export type JobRunnerState = StoreState & {
+  /** {@link jobKey}s of rollups that used up their attempts; not re-planned until `rescan({ retryExhausted: true })`. */
+  readonly exhaustedRollups?: readonly string[]
+}
+
+/**
+ * A queued job as this module stores it. A claimed job carries the claim's
+ * `lease` id until `leasedUntil` (its `notBefore` is pushed there too): other
+ * runners neither run nor force it before then, and only the claim settles it.
+ */
+export type LeasedJob = QueuedJob & { readonly lease?: string; readonly leasedUntil?: Millis }
 
 export interface JobRunnerOptions {
   /** Per-attempt limit; the job's signal is aborted when it elapses. */
@@ -25,7 +37,7 @@ export interface JobRunnerOptions {
   /** First retry delay; doubles per attempt up to `maxBackoffMs`. */
   readonly baseBackoffMs?: number
   readonly maxBackoffMs?: number
-  /** Attempts before a job is dropped and its episode left `failed`. */
+  /** Attempts before a job is dropped and its episode left `failed` (or its rollup period no longer planned). */
   readonly maxAttempts?: number
   /** Consecutive failures (any job) that open the circuit breaker. */
   readonly breakerThreshold?: number
@@ -54,18 +66,25 @@ export interface JobRunnerDeps {
   readonly clock: Clock
   readonly logger: JobLogger
   readonly timers?: JobTimers
-  /** Called on rescan and after every successful job for that scope; returned periods are queued (deduped). */
+  /**
+   * Called on rescan and after every successful job for that scope; returned
+   * periods are queued (deduped, minus rollups given up on). It may return
+   * nothing while it cannot plan yet; the next success plans again.
+   */
   readonly rollupPlanner?: (scope: ScopeId, index: MemoryIndex) => readonly { readonly period: RollupPeriod }[]
   readonly options?: JobRunnerOptions
 }
 
 export interface KickOptions {
-  /** Make every queued job due now and close the circuit breaker (the daily quota still applies). */
+  /** Make every queued job due now, except ones another claim is running, and close the circuit breaker (the daily quota still applies). */
   readonly force?: boolean
 }
 
 export interface RescanOptions {
-  /** Also re-queue `failed` episodes that used up their attempts, with a fresh attempt budget. */
+  /**
+   * Also re-queue `failed` episodes that used up their attempts (not empty
+   * ones) with a fresh attempt budget, and plan rollups given up on again.
+   */
   readonly retryExhausted?: boolean
 }
 
@@ -150,7 +169,7 @@ type Step = { readonly kind: 'ran' } | { readonly kind: 'idle' } | { readonly ki
 
 interface Claim {
   readonly original: QueuedJob
-  readonly leased: QueuedJob
+  readonly leased: LeasedJob & { readonly lease: string }
   /** Quota day the claim was counted against. */
   readonly day: string
 }
@@ -184,14 +203,37 @@ function isLedger(value: unknown): value is JobQuotaLedger {
   return typeof ledger['day'] === 'string' && typeof ledger['used'] === 'number' && Number.isFinite(ledger['used'])
 }
 
-function validJobs(queue: unknown): readonly QueuedJob[] {
+function validJobs(queue: unknown): readonly LeasedJob[] {
   return Array.isArray(queue) ? queue.filter(isQueuedJob) : []
 }
 
-function pickDue(queue: readonly QueuedJob[], now: Millis): QueuedJob | undefined {
-  let best: QueuedJob | undefined
+function leasedUntil(job: LeasedJob): Millis | undefined {
+  return typeof job.leasedUntil === 'number' && Number.isFinite(job.leasedUntil) ? job.leasedUntil : undefined
+}
+
+function isLeased(job: LeasedJob, now: Millis): boolean {
+  return (leasedUntil(job) ?? -Infinity) > now
+}
+
+/** When the job may next be claimed: its backoff, or the end of a lease that outlives it. */
+function dueAt(job: LeasedJob): Millis {
+  return Math.max(job.notBefore, leasedUntil(job) ?? -Infinity)
+}
+
+function withoutLease(job: LeasedJob): QueuedJob {
+  const { lease: _lease, leasedUntil: _leasedUntil, ...rest } = job
+  return rest as QueuedJob
+}
+
+function exhaustedRollups(state: StoreState): readonly string[] {
+  const keys = (state as JobRunnerState).exhaustedRollups
+  return Array.isArray(keys) ? keys.filter((key): key is string => typeof key === 'string') : []
+}
+
+function pickDue(queue: readonly LeasedJob[], now: Millis): LeasedJob | undefined {
+  let best: LeasedJob | undefined
   for (const job of queue) {
-    if (job.notBefore > now) continue
+    if (dueAt(job) > now) continue
     if (!best) {
       best = job
       continue
@@ -227,9 +269,9 @@ function resolveOptions(options: JobRunnerOptions = {}): Required<JobRunnerOptio
 /**
  * Background runner for summary and rollup jobs (design §3.5). The queue and
  * the daily quota live in `state.json` through `store.updateState`; a claimed
- * job is leased (its `notBefore` pushed past the timeout and `attempts`
- * incremented) so a second DSH process sharing the store skips it and a crash
- * mid-job still counts the attempt. One job runs at a time.
+ * job is leased (see {@link LeasedJob}: leased past the timeout, `attempts`
+ * incremented) so a second DSH process sharing the store skips it, even when
+ * forced, and a crash mid-job still counts the attempt. One job runs at a time.
  */
 export function createJobRunner(deps: JobRunnerDeps): JobRunner {
   const { store, clock, logger } = deps
@@ -255,11 +297,14 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
   const builtRollups = new Set<string>()
   const totals = { succeeded: 0, failed: 0, timedOut: 0, cancelled: 0, deferred: 0 }
 
+  /**
+   * Today's stored ledger is authoritative, since other processes refund into
+   * it; the remembered count only stands in when `state.json` lost its ledger.
+   */
   function mergeLedger(persisted: unknown, now: Millis): JobQuotaLedger {
     const day = localDayKey(now)
-    const stored = isLedger(persisted) && persisted.day === day ? persisted.used : 0
-    const remembered = ledger.day === day ? ledger.used : 0
-    return { day, used: Math.max(stored, remembered) }
+    if (isLedger(persisted) && persisted.day === day) return { day, used: Math.max(0, persisted.used) }
+    return { day, used: ledger.day === day ? ledger.used : 0 }
   }
 
   function observe(state: StoreState, now: Millis): readonly QueuedJob[] {
@@ -287,13 +332,20 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     wake = { handle, at }
   }
 
-  async function addJobs(jobs: readonly QueuedJob[]): Promise<number> {
-    if (jobs.length === 0) return 0
+  /**
+   * Queue the jobs not already queued. `planned` also leaves out rollups given
+   * up on; `retryExhausted` forgets those first.
+   */
+  async function addJobs(jobs: readonly QueuedJob[], options: { readonly planned?: boolean; readonly retryExhausted?: boolean } = {}): Promise<number> {
+    if (jobs.length === 0 && !options.retryExhausted) return 0
     let added = 0
     try {
       const next = await store.updateState(state => {
         added = 0
+        const given = exhaustedRollups(state)
+        const forget = options.retryExhausted === true && given.length > 0
         const keys = new Set(validJobs(state.queue).map(jobKey))
+        if (options.planned && !options.retryExhausted) for (const key of given) keys.add(key)
         const fresh: QueuedJob[] = []
         for (const job of jobs) {
           const key = jobKey(job)
@@ -302,7 +354,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           fresh.push(job)
         }
         added = fresh.length
-        return added === 0 ? state : { ...state, queue: [...state.queue, ...fresh] }
+        if (added === 0 && !forget) return state
+        const { exhaustedRollups: _given, ...rest } = state as JobRunnerState
+        const update: JobRunnerState = { ...forget ? rest : state, queue: [...state.queue, ...fresh] }
+        return update
       })
       observe(next, clock.now())
     } catch (error) {
@@ -336,6 +391,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 
   function recoveredJob(scope: ScopeId, meta: EpisodeMeta, now: Millis, retryExhausted: boolean): QueuedJob | undefined {
     if (meta.status !== 'sealed' && meta.status !== 'failed') return undefined
+    if (isEmptyEpisode(meta)) return undefined
     const attempts = Math.max(0, meta.attempts ?? 0)
     const exhausted = attempts >= limits.maxAttempts
     if (exhausted && !retryExhausted) return undefined
@@ -366,7 +422,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       }
       jobs.push(...plannedRollups(scope, index, now))
     }
-    return addJobs(jobs)
+    return addJobs(jobs, { planned: true, retryExhausted: options.retryExhausted === true })
   }
 
   async function applyForce(): Promise<void> {
@@ -374,7 +430,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     const now = clock.now()
     const next = await store.updateState(state => ({
       ...state,
-      queue: state.queue.map(job => (isQueuedJob(job) && job.notBefore > now ? { ...job, notBefore: now } : job)),
+      queue: state.queue.map(job => (isQueuedJob(job) && job.notBefore > now && !isLeased(job, now) ? { ...job, notBefore: now } : job)),
     }))
     observe(next, now)
   }
@@ -386,8 +442,9 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       const quota = mergeLedger(state.quota, now)
       const job = pickDue(validJobs(state.queue), now)
       if (!job || quota.used >= limits.dailyQuota) return state
-      const leased: QueuedJob = { ...job, attempts: job.attempts + 1, notBefore: now + leaseMs }
-      claimed = { original: job, leased, day: quota.day }
+      const original = withoutLease(job)
+      const leased = { ...original, attempts: job.attempts + 1, notBefore: now + leaseMs, lease: randomUUID(), leasedUntil: now + leaseMs }
+      claimed = { original, leased, day: quota.day }
       const update: StoreState = {
         ...state,
         queue: state.queue.map(entry => (entry === job ? leased : entry)),
@@ -430,9 +487,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
   }
 
   /**
-   * Replace or remove this runner's lease, matched by key, attempts and
-   * `notBefore`: a lease another process re-claimed after ours expired is
-   * theirs to settle. Deferred and cancelled jobs did not use their quota slot.
+   * Replace or remove this runner's lease, matched by its lease id: a lease
+   * another process re-claimed after ours expired is theirs to settle. A rollup
+   * out of attempts is recorded as given up. Deferred and cancelled jobs did
+   * not use their quota slot.
    */
   async function settle(claimed: Claim, outcome: Outcome, now: Millis): Promise<void> {
     const key = jobKey(claimed.leased)
@@ -445,7 +503,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         ? claimed.original
         : outcome.kind === 'deferred'
           ? { ...claimed.original, notBefore: now + Math.max(0, outcome.error.retryAfterMs ?? limits.baseBackoffMs) }
-          : { ...claimed.leased, notBefore: now + backoffDelay(claimed.leased.attempts, limits) }
+          : { ...withoutLease(claimed.leased), notBefore: now + backoffDelay(claimed.leased.attempts, limits) }
     try {
       const next = await store.updateState(state => {
         const quota = refund && isLedger(state.quota) && state.quota.day === claimed.day && state.quota.used > 0
@@ -454,11 +512,18 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         refunded = quota !== undefined
         const at = state.queue.findIndex(entry => isQueuedJob(entry)
           && jobKey(entry) === key
-          && entry.attempts === claimed.leased.attempts
-          && entry.notBefore === claimed.leased.notBefore)
-        const queue = at < 0 ? state.queue : replacement ? state.queue.toSpliced(at, 1, replacement) : state.queue.toSpliced(at, 1)
+          && (entry as LeasedJob).lease === claimed.leased.lease)
         if (at < 0 && quota === undefined) return state
-        return { ...state, queue, ...quota === undefined ? {} : { quota } }
+        const queue = at < 0 ? state.queue : replacement ? state.queue.toSpliced(at, 1, replacement) : state.queue.toSpliced(at, 1)
+        const given = exhaustedRollups(state)
+        const gaveUp = at >= 0 && exhausted && claimed.leased.kind === 'rollup' && !given.includes(key)
+        const update: JobRunnerState = {
+          ...state,
+          queue,
+          ...quota === undefined ? {} : { quota },
+          ...gaveUp ? { exhaustedRollups: [...given, key] } : {},
+        }
+        return update
       })
       if (refunded && ledger.day === claimed.day) ledger = { day: ledger.day, used: Math.max(0, ledger.used - 1) }
       observe(next, clock.now())
@@ -476,7 +541,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     if (!deps.rollupPlanner) return
     try {
       const index = await store.readIndex(job.scope)
-      await addJobs(plannedRollups(job.scope, index, clock.now()))
+      await addJobs(plannedRollups(job.scope, index, clock.now()), { planned: true })
     } catch (error) {
       logger.warn('could not plan rollups for scope %s: %s', job.scope, describe(error))
     }
@@ -534,7 +599,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     const queue = observe(await store.readState(), now)
     if (!pickDue(queue, now)) {
       if (queue.length === 0) return { kind: 'idle' }
-      return { kind: 'wait', at: queue.reduce((earliest, job) => Math.min(earliest, job.notBefore), Infinity) }
+      return { kind: 'wait', at: queue.reduce((earliest, job) => Math.min(earliest, dueAt(job)), Infinity) }
     }
     if (ledger.used >= limits.dailyQuota) {
       if (quotaNoticeDay !== ledger.day) {
