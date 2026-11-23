@@ -9,7 +9,7 @@ import CommandRuntime from '@deepseek-ai/dsh-commands'
 import LlmRuntime, { createAssistantMessage, createSystemMessage, createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmResolvedModelInfo, Message, StreamChunk, UserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
-import type { Session } from '@deepseek-ai/dsh-session'
+import type { CreateSessionOptions, Session } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { estimateMessage } from '@deepseek-ai/dsh-token-meter/src/estimate.ts'
 import ToolsService from '@deepseek-ai/dsh-tools'
@@ -32,13 +32,14 @@ export type Responder = (options: GenerateOptions, index: number) => Reply
 export class ScriptedAdapter extends LlmAdapter {
   readonly calls: GenerateOptions[] = []
 
-  constructor(private readonly responder: Responder, private readonly contextWindow: number) {
+  constructor(private readonly responder: Responder, private readonly contextWindow: number, private readonly lookup?: Promise<unknown>) {
     super()
   }
 
-  override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    if (model !== MODEL) return Promise.reject(new Error(`unknown model ${model}`))
-    return Promise.resolve({ provider, id: model, name: model, context: { contextWindow: this.contextWindow }, defaultMaxTokens: 1024 })
+  override async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    await this.lookup
+    if (model !== MODEL) throw new Error(`unknown model ${model}`)
+    return { provider, id: model, name: model, context: { contextWindow: this.contextWindow }, defaultMaxTokens: 1024 }
   }
 
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -72,7 +73,11 @@ export function summaryReply(overrides: Partial<EpisodeSummaryResult> = {}): str
   })
 }
 
-/** Token meter fake over the 4-chars/token heuristic of the real one; pressure is set per session. */
+/**
+ * Token meter fake over the 4-chars/token heuristic of the real one; pressure
+ * is set per session. A set `pressureTokens` stands for the provider usage of
+ * a request made just now, so `measure()` reports it as its usage baseline.
+ */
 export function createMeter() {
   const pressure = new Map<string, { pressureTokens?: number; contextWindow?: number }>()
   const service = {
@@ -84,7 +89,9 @@ export function createMeter() {
         return { seq, tokens, heuristicTokens: tokens }
       })
       const total = nodes.reduce((sum, node) => sum + node.tokens, 0)
-      return { logRevision: 0, baseline: { kind: 'estimated', tokens: total }, surfaceDeltaTokens: 0, totalTokens: total, surfaceTokens: total, nodes }
+      const usage = pressure.get(session.id)?.pressureTokens
+      const baseline = usage === undefined ? { kind: 'estimated', tokens: total } : { kind: 'usage', tokens: usage }
+      return { logRevision: 0, baseline, surfaceDeltaTokens: 0, totalTokens: baseline.tokens, surfaceTokens: total, nodes }
     },
     estimateMessage(message: Message) {
       return estimateMessage(message)
@@ -106,6 +113,8 @@ export interface HarnessOptions {
   readonly root?: string
   /** Idle consolidation quiet delay; defaults to 0 so tests do not wait. */
   readonly idleQuietMs?: number
+  /** Model lookups (`resolveModelInfo`) wait for this before answering. */
+  readonly modelLookup?: Promise<unknown>
 }
 
 export interface Harness {
@@ -116,13 +125,15 @@ export interface Harness {
   readonly meter: ReturnType<typeof createMeter>
   readonly runtime: MemoryCloudRuntime
   readonly compaction?: BasicCompactionEngine
-  conversation(id: string): Promise<Conversation>
+  conversation(id: string, meta?: CreateSessionOptions['meta']): Promise<Conversation>
   setVolatile(path: 'level' | 'compactionMode', value: unknown): void
   tool<T>(name: string, args: Record<string, unknown>, agent: Agent): Promise<T>
   command(agent: Agent, line: string): Promise<{ kind: string; text?: string }>
   preStep(agent: Agent, messages: readonly UserMessage[]): Promise<PreStepDecision>
   /** Wait for capture writes and background jobs. */
   settle(): Promise<void>
+  /** Unload the plugin and start it again on the same context, store and config, like an upgrade or a `storageRoot` edit. */
+  reload(): Promise<void>
   dispose(): Promise<void>
 }
 
@@ -179,11 +190,13 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   await ctx.plugin(CommandRuntime)
   await ctx.plugin(LlmRuntime)
   const responder: Responder = options.responder ?? ((call) => call.purpose === SUMMARIZE_PURPOSE ? summaryReply() : 'DSH default checkpoint summary.')
-  const adapter = new ScriptedAdapter(responder, contextWindow)
+  const adapter = new ScriptedAdapter(responder, contextWindow, options.modelLookup)
   ctx.llm.registerAdapter([PROVIDER], adapter)
   const meter = createMeter()
   ctx.provide('tokenMeter', meter.service)
   ctx.provide('agentDefaultModel', { currentSelection: () => ({ provider: PROVIDER, model: MODEL }) })
+  const agents = new Map<string, Agent>()
+  ctx.provide('agents', { get: (id: string) => agents.get(id), list: () => [...agents.values()] })
 
   const config = Config({ storageRoot: root, level: options.level ?? 3, compactionMode: options.mode ?? 'auto' })
   const setVolatile = (path: 'level' | 'compactionMode', value: unknown): void => {
@@ -205,16 +218,19 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     compaction = ctx.get('compaction') as BasicCompactionEngine
   }
 
-  let runtime: MemoryCloudRuntime | undefined
-  const fiber: Fiber = await ctx.plugin({
-    name: 'memory-cloud-under-test',
-    inject: ['sessions', 'llm', 'tokenMeter', 'systemPrompt', 'tools', 'commands'],
-    apply: (sub: Context) => {
-      runtime = startMemoryCloud(sub, config, { idleQuietMs: options.idleQuietMs ?? 0 })
-    },
-  })
-  if (runtime === undefined) throw new Error('runtime did not start')
-  const started = runtime
+  const start = async (): Promise<{ fiber: Fiber; runtime: MemoryCloudRuntime }> => {
+    let runtime: MemoryCloudRuntime | undefined
+    const fiber = await ctx.plugin({
+      name: 'memory-cloud-under-test',
+      inject: ['sessions', 'llm', 'tokenMeter', 'systemPrompt', 'tools', 'commands'],
+      apply: (sub: Context) => {
+        runtime = startMemoryCloud(sub, config, { idleQuietMs: options.idleQuietMs ?? 0 })
+      },
+    })
+    if (runtime === undefined) throw new Error('runtime did not start')
+    return { fiber, runtime }
+  }
+  let current = await start()
 
   const harness: Harness = {
     ctx,
@@ -222,10 +238,12 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     config,
     adapter,
     meter,
-    runtime: started,
+    get runtime() {
+      return current.runtime
+    },
     ...compaction === undefined ? {} : { compaction },
-    async conversation(id) {
-      const session = ctx.sessions.create(SessionId(id))
+    async conversation(id, meta) {
+      const session = ctx.sessions.create(SessionId(id), meta === undefined ? {} : { meta })
       const agent = {
         session,
         options: { provider: PROVIDER, model: MODEL },
@@ -234,6 +252,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
         runMaintenance: <T,>(task: (signal: AbortSignal) => Promise<T>) => task(new AbortController().signal),
         whenIdle: async () => {},
       } as unknown as Agent
+      agents.set(session.id, agent)
       await ctx.serial('agent/created', { agent, source: 'startup' })
       return new Conversation(session, agent)
     },
@@ -253,14 +272,19 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
       return ctx.waterfall('agent/pre-step', { agent, messages: [...messages], turn: 1, step: 1, signal, modelSelection: { provider: PROVIDER, model: MODEL } } as never, async () => ({ kind: 'enter', messages: [...messages] }) as PreStepDecision) as Promise<PreStepDecision>
     },
     async settle() {
+      const started = current.runtime
       await started.capture.flush()
       for (let round = 0; round < 5; round++) {
         await started.runner.drain(5000)
         await started.capture.settle()
       }
     },
+    async reload() {
+      await current.fiber.dispose()
+      current = await start()
+    },
     async dispose() {
-      await fiber.dispose()
+      await current.fiber.dispose()
       if (options.root === undefined) await rm(root, { recursive: true, force: true })
     },
   }

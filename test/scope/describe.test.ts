@@ -26,6 +26,12 @@ describe('describeSession', () => {
     })
   })
 
+  it('uses the preset the session switched to over the creation-time header value', () => {
+    expect(describeSession({ header: header({ agentPreset: 'standard' }) }, { agentPreset: 'demo' }).agentPreset).toBe('demo')
+    expect(describeSession({ header: header({ agentPreset: 'standard' }) }, { agentPreset: '' }).agentPreset).toBe('standard')
+    expect(describeSession({ header: header() }, { agentPreset: 'demo' }).agentPreset).toBe('demo')
+  })
+
   it('marks subagents and keeps their lineage', () => {
     const descriptor = describeSession({ header: header({ origin: 'subagent', parentSession: 'parent-1', delegationDepth: 2 }) })
     expect(descriptor).toEqual({ sessionId: 'sess-1', origin: 'subagent', parentSession: 'parent-1', delegationDepth: 2 })
@@ -97,5 +103,11 @@ describe('createSessionTagRegistry', () => {
     registry.set('sess-2', ['a'])
     registry.set('sess-2', [])
     expect(registry.get('sess-2')).toEqual([])
+  })
+
+  it('keeps its entries in a map the caller can hand to a later registry', () => {
+    const shared = new Map<string, readonly string[]>()
+    createSessionTagRegistry(shared).set('sess-1', ['qqbot:fish:group:1'])
+    expect(createSessionTagRegistry(shared).get('sess-1')).toEqual(['qqbot:fish:group:1'])
   })
 })

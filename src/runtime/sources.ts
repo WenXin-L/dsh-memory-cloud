@@ -1,5 +1,6 @@
-import type { EpisodeMeta, MemoryStore, PackCandidate, PackInput, RollupEntry, ScopeId } from '../contracts.ts'
+import type { EpisodeMeta, MemoryStore, PackCandidate, PackInput, RollupEntry, RollupPeriod, ScopeId } from '../contracts.ts'
 import type { FileMemoryStore } from '../store/index.ts'
+import { parentPeriod, periodId } from '../summarize/jobs/periods.ts'
 
 /** `lastError` prefix of episodes with no conversation content; never retried, never packed. */
 export const EMPTY_EPISODE_ERROR = 'empty-input'
@@ -28,9 +29,28 @@ export function isEmptyEpisode(meta: Pick<EpisodeMeta, 'status' | 'lastError'>):
 type TierTexts = Pick<PackCandidate, 'summary' | 'gist' | 'promises' | 'dates'>
 
 /**
+ * Periods whose rollup text may carry a hidden episode: every rollup that
+ * lists one, and every coarser period above it, since a month rollup is
+ * written from its week rollups' text and lists only the members visible
+ * when it was built.
+ */
+export function leakingRollupPeriods(index: { readonly episodes: readonly EpisodeMeta[]; readonly rollups: readonly RollupEntry[] }): ReadonlySet<string> {
+  const hidden = new Set<string>(index.episodes.filter(meta => meta.hidden).map(meta => meta.id))
+  const leaking = new Set<string>()
+  if (hidden.size === 0) return leaking
+  for (const entry of index.rollups) {
+    if (!entry.episodeIds.some(id => hidden.has(id))) continue
+    for (let period: RollupPeriod | undefined = entry.period; period !== undefined; period = parentPeriod(period)) leaking.add(periodId(period))
+  }
+  return leaking
+}
+
+/**
  * Packer input for one scope: every visible episode with whatever tier texts
  * exist (kept while a `/memory rebuild` re-summarizes them) plus the promises
- * and dates of its `summary.md` frontmatter, every rollup, and `profile.md`.
+ * and dates of its `summary.md` frontmatter, every rollup that cannot carry a
+ * hidden episode ({@link leakingRollupPeriods}; the visible members of a
+ * dropped rollup are packed as their own gists), and `profile.md`.
  * Tier texts are cached by summary time, so repeated packs read only the index.
  */
 export function createPackSourceLoader(
@@ -68,7 +88,9 @@ export function createPackSourceLoader(
         candidates.push({ meta, ...await tierTexts(scope, meta) })
       }
       const rollups: { entry: RollupEntry; text: string }[] = []
+      const leaking = leakingRollupPeriods(index)
       for (const entry of index.rollups) {
+        if (leaking.has(periodId(entry.period))) continue
         const text = await store.readRollup(scope, entry.id)
         if (text !== undefined && text.trim().length > 0) rollups.push({ entry, text })
       }

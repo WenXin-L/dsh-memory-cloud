@@ -74,7 +74,11 @@ export function expandScopeTemplate(template: string, captures: readonly string[
   })
 }
 
-/** The scope of a session no rule matched while unmatched sessions are isolated. */
+/**
+ * The scope of a session no rule matched while unmatched sessions are
+ * isolated. Pass the root of a subagent's delegation chain; a subagent whose
+ * parent is unknown is keyed on that parent.
+ */
 export function isolatedScopeId(session: SessionDescriptor): ScopeId {
   const key = session.origin === 'subagent' && session.parentSession ? session.parentSession : session.sessionId
   return `session-${fnv1a(key)}` as ScopeId
@@ -90,6 +94,32 @@ export interface ScopeResolverOptions {
   readonly unmatched?: () => UnmatchedDecision
   /** Reports a rule that is skipped, once per distinct rule. */
   readonly onWarning?: (message: string) => void
+  /**
+   * Descriptor of a session by id. A subagent is resolved as the session at
+   * the root of its delegation chain (following `parentSession` while
+   * `origin` is `subagent`), whatever its own tags; the walk stops at a
+   * parent this does not know.
+   */
+  readonly lookup?: (sessionId: string) => SessionDescriptor | undefined
+}
+
+/** The session a subagent's delegation chain starts from, as far as `lookup` knows it. */
+function delegationRoot(session: SessionDescriptor, lookup: ScopeResolverOptions['lookup']): SessionDescriptor {
+  if (lookup === undefined) return session
+  const seen = new Set<string>([session.sessionId])
+  let current = session
+  while (current.origin === 'subagent' && current.parentSession !== undefined && !seen.has(current.parentSession)) {
+    seen.add(current.parentSession)
+    let parent: SessionDescriptor | undefined
+    try {
+      parent = lookup(current.parentSession)
+    } catch {
+      parent = undefined
+    }
+    if (parent === undefined) break
+    current = parent
+  }
+  return current
 }
 
 const MAX_CACHED_GLOBS = 256
@@ -108,7 +138,8 @@ function isRule(value: unknown): value is ScopeRule {
  * scope instead. A rule whose template uses more captures than its glob has
  * wildcards is skipped. Sessions no rule matches follow `unmatched`: the
  * private owner scope, or an isolated per-session scope. Subagent sessions
- * resolve like any other session but are never captured.
+ * resolve as the root session of their delegation chain (see `lookup`) and
+ * are never captured.
  */
 export function createScopeResolver(options: ScopeResolverOptions): ScopeResolver {
   const globs = new Map<string, CompiledGlob>()
@@ -154,8 +185,11 @@ export function createScopeResolver(options: ScopeResolverOptions): ScopeResolve
   return {
     resolve(session: SessionDescriptor): ScopeDecision {
       const capture = session.origin !== 'subagent'
-      const suffix = capture ? '' : '; subagent session, capture disabled'
-      const tags = descriptorTags(session)
+      const root = capture ? session : delegationRoot(session, options.lookup)
+      const suffix = capture
+        ? ''
+        : root === session ? '; subagent session, capture disabled' : `; subagent of session ${root.sessionId}, capture disabled`
+      const tags = descriptorTags(root)
       const rules = readRules()
       for (const [index, rule] of rules.entries()) {
         if (!isRule(rule)) continue
@@ -185,7 +219,7 @@ export function createScopeResolver(options: ScopeResolverOptions): ScopeResolve
       if (unmatched.mode === 'owner') {
         return { scope: OWNER_SCOPE, capture, private: true, reason: `no scope rule matched; ${unmatched.reason}${suffix}` }
       }
-      const scope = isolatedScopeId(session)
+      const scope = isolatedScopeId(root)
       return {
         scope,
         capture,

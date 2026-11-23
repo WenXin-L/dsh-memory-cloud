@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
-import type { Session, SessionSeq } from '@deepseek-ai/dsh-session'
+import type { Session, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry/types'
 import type {} from '@deepseek-ai/dsh-session-log-deepseek'
 import { attachCaptureToDsh, createCapture, isSyntheticRecord, toRawEventRecord } from '../capture/index.ts'
@@ -37,7 +37,7 @@ import {
   listLoadedRowsDeep,
   loadedRowNames,
 } from '../scope/index.ts'
-import type { CoexistenceReport } from '../scope/index.ts'
+import type { CoexistenceReport, SessionLike } from '../scope/index.ts'
 import { createFileMemoryStore } from '../store/index.ts'
 import type { FileMemoryStore } from '../store/index.ts'
 import { createDshLlmClient } from '../summarize/index.ts'
@@ -90,6 +90,39 @@ const TAKEOVER_REFRESH_DELAY_MS = 10_000
 const COEXISTENCE_TTL_MS = 5000
 const MAX_FALLBACKS = 20
 const ROUTINE_FALLBACKS: ReadonlySet<EngineFallbackKind> = new Set(['subagent', 'no-capture', 'region-too-small'])
+const SESSION_TAGS = Symbol.for('dsh-memory-cloud-brain.session-tags')
+
+/** `ctx.agents` (`@deepseek-ai/dsh-agent`): every live agent, including ones created before this plugin started. */
+interface AgentRegistryLike {
+  get(id: SessionId): Agent | undefined
+  list(): readonly Agent[]
+}
+
+/** `ctx.agentPresets.presetForSession`: the preset a session runs now, after any `agent-preset/selected`. */
+interface PresetProjectionLike {
+  presetForSession(session: Session): string | null
+}
+
+function agentRegistryOf(ctx: Context): AgentRegistryLike | undefined {
+  const registry = optionalService<unknown>(ctx, 'agents')
+  return hasMethod(registry, 'get') && hasMethod(registry, 'list') ? registry as unknown as AgentRegistryLike : undefined
+}
+
+/**
+ * Session tags of one DSH app, shared by every start of this plugin in the
+ * process: a reload (upgrade, `storageRoot` edit, re-enable) keeps the tags
+ * bridges set on sessions that are still live.
+ */
+function sharedSessionTags(ctx: Context): Map<string, readonly string[]> {
+  const holder = globalThis as unknown as Record<symbol, WeakMap<object, Map<string, readonly string[]>> | undefined>
+  const apps = holder[SESSION_TAGS] ??= new WeakMap()
+  let tags = apps.get(ctx.root)
+  if (tags === undefined) {
+    tags = new Map()
+    apps.set(ctx.root, tags)
+  }
+  return tags
+}
 
 /** Handles kept for tests and diagnostics; the plugin itself only needs `service`. */
 export interface MemoryCloudRuntime {
@@ -142,23 +175,67 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
     }
   }
 
-  const tags = createSessionTagRegistry()
+  const liveAgents = new Map<string, Agent>()
+  /** When idle consolidation last started, or a compaction last ended, per agent. */
+  const idleAttempts = new WeakMap<Agent, number>()
+  const agentOf = (sessionId: string): Agent | undefined => {
+    const live = liveAgents.get(sessionId)
+    if (live !== undefined) return live
+    try {
+      return agentRegistryOf(ctx)?.get(sessionId as SessionId)
+    } catch {
+      return undefined
+    }
+  }
+  const sessionOf = (sessionId: string): Session | undefined => {
+    const agent = agentOf(sessionId)
+    if (agent !== undefined) return agent.session
+    try {
+      return ctx.sessions.get(sessionId as SessionId)
+    } catch {
+      return undefined
+    }
+  }
+
+  const sessionTags = sharedSessionTags(ctx)
+  guard('session tags', () => {
+    for (const sessionId of sessionTags.keys()) {
+      if (sessionOf(sessionId) === undefined) sessionTags.delete(sessionId)
+    }
+  })
+  const tags = createSessionTagRegistry(sessionTags)
+  const selectedPresets = new Map<string, string>()
   const descriptors = new Map<string, SessionDescriptor>()
   const tagProviders = [tags.provider, inheritParentTags(id => descriptors.get(id)?.tags)]
-  const describe = (session: Session): SessionDescriptor => {
-    const cached = descriptors.get(session.id)
-    if (cached !== undefined) return cached
+  const presetOf = (sessionId: string, session?: Session): string | undefined => {
+    const presets = optionalService<unknown>(ctx, 'agentPresets')
+    if (session !== undefined && hasMethod(presets, 'presetForSession')) {
+      try {
+        const preset: unknown = (presets as unknown as PresetProjectionLike).presetForSession(session)
+        if (typeof preset === 'string' && preset !== '') return preset
+      } catch {}
+    }
+    return selectedPresets.get(sessionId)
+  }
+  const describeAs = (sessionId: string, session: SessionLike, live?: Session): SessionDescriptor => {
+    const agentPreset = presetOf(sessionId, live)
     const descriptor = describeSession(session, {
       tagProviders,
       onProviderError: error => logger.warn('session tag provider failed: %s', errorMessage(error)),
+      ...agentPreset === undefined ? {} : { agentPreset },
     })
-    descriptors.set(session.id, descriptor)
+    descriptors.set(sessionId, descriptor)
     return descriptor
   }
+  const describe = (session: Session): SessionDescriptor => descriptors.get(session.id) ?? describeAs(session.id, session, session)
   const scopes = createScopeResolver({
     rules: () => config.scopeRules.get(),
     unmatched: () => decideUnmatched(config.unmatchedSessions.get(), coexistence().bridgePlugins?.map(plugin => plugin.id)),
     onWarning: message => logger.warn('%s', message),
+    lookup: (sessionId) => {
+      const session = sessionOf(sessionId)
+      return session === undefined ? descriptors.get(sessionId) : describe(session)
+    },
   })
   const scopeOf = (session: Session): ScopeDecision => scopes.resolve(describe(session))
 
@@ -196,6 +273,7 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
   })
 
   const jobOptions = DEFAULT_JOB_RUNNER_OPTIONS
+  let rollupPlanningDeferred = false
   const summaries = createSummaryService({
     store,
     llm,
@@ -214,7 +292,11 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
     summarizeEpisode: (scope, id, signal) => summaries.summarizeEpisode(scope, id, signal),
     buildRollup: (scope, period, signal) => summaries.buildRollup(scope, period, signal),
     rollupPlanner: (_scope, index) => {
-      const budget = budgets.levelBudgetNow()
+      const budget = budgets.levelBudgetKnown()
+      if (budget === undefined) {
+        rollupPlanningDeferred = true
+        return []
+      }
       return summaries.planRollups(index, budget.quotas.distant, budget.gistTokens)
     },
     options: jobOptions,
@@ -246,11 +328,11 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
     halfLifeDays: () => config.halfLifeDays.get(),
     log: record => summaries.log(record),
     mayRead: (sessionId, scope) => {
-      const agent = liveAgents.get(sessionId)
+      const agent = agentOf(sessionId)
       return agent !== undefined && canReadScope(scopeOf(agent.session), scope)
     },
     syntheticSeq: (sessionId, seq) => {
-      const event = liveAgents.get(sessionId)?.session.eventAt(seq as SessionSeq)
+      const event = agentOf(sessionId)?.session.eventAt(seq as SessionSeq)
       return event !== undefined && isSyntheticRecord(toRawEventRecord(event))
     },
   })
@@ -332,7 +414,6 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
     runner.kick()
   }
 
-  const liveAgents = new Map<string, Agent>()
   const profileName = optionalService<ProfileContextLike>(ctx, 'profileContext')?.name
   const takeover = createTakeoverController({
     configEditor: () => configEditorOf(ctx),
@@ -475,7 +556,7 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
 
   const api: MemoryCloudApi = {
     status: async (sessionId) => {
-      const agent = sessionId === undefined ? undefined : liveAgents.get(sessionId)
+      const agent = sessionId === undefined ? undefined : agentOf(sessionId)
       return buildStatus(agent)
     },
     setLevel: level => setLevel(level).catch(error => ({ ok: false, message: errorMessage(error) })),
@@ -492,17 +573,29 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
     notifyFallback,
     api,
     setSessionTags(sessionId, values) {
-      const before = descriptors.get(sessionId)
       tags.set(sessionId, values)
-      descriptors.delete(sessionId)
-      const session = liveAgents.get(sessionId)?.session
-      const next = session === undefined ? undefined : scopeOf(session)
-      const previous = before === undefined ? undefined : scopes.resolve(before)
-      if (previous !== undefined && next !== undefined && previous.scope === next.scope && previous.capture === next.capture) return
-      injector.forget(sessionId)
-      composer.forget(sessionId)
-      if (previous !== undefined) rescopeCapture(sessionId, previous.scope, next?.scope)
+      redescribe(sessionId)
     },
+  }
+
+  /**
+   * Describe a session again after its tags or preset changed. When its
+   * decision moved, injection and the composer drop the session's caches and
+   * capture seals the open episode in the old scope.
+   */
+  const redescribe = (sessionId: string): void => {
+    const before = descriptors.get(sessionId)
+    descriptors.delete(sessionId)
+    const session = sessionOf(sessionId)
+    const after = session !== undefined
+      ? describe(session)
+      : before === undefined ? undefined : describeAs(sessionId, { id: sessionId, header: before })
+    const previous = before === undefined ? undefined : scopes.resolve(before)
+    const next = after === undefined ? undefined : scopes.resolve(after)
+    if (previous !== undefined && next !== undefined && previous.scope === next.scope && previous.capture === next.capture) return
+    injector.rescope(sessionId)
+    composer.forget(sessionId)
+    if (previous !== undefined) rescopeCapture(sessionId, previous.scope, next?.scope)
   }
 
   const rescopeCapture = (sessionId: string, previous: ScopeId, next: ScopeId | undefined): void => {
@@ -545,10 +638,13 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
   ctx.on('session/disposed', session => guard('session/disposed', () => {
     descriptors.delete(session.id)
     tags.delete(session.id)
+    selectedPresets.delete(session.id)
     composer.forget(session.id)
   }))
-  ctx.on('agent-preset/selected', sessionId => guard('agent-preset/selected', () => {
-    const agent = liveAgents.get(sessionId)
+  ctx.on('agent-preset/selected', (sessionId, agentPreset) => guard('agent-preset/selected', () => {
+    if (typeof agentPreset === 'string' && agentPreset !== '') selectedPresets.set(sessionId, agentPreset)
+    redescribe(sessionId)
+    const agent = agentOf(sessionId)
     if (agent === undefined) return
     const decision = modes.refresh(agent)
     logger.debug('session %s: %s mode after a preset change (%s)', sessionId, decision.mode, decision.reason)
@@ -556,7 +652,14 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
   ctx.on('session/event', (session, event) => {
     if (event.type !== 'compaction/end') return
     const failed = (event.data as { readonly error?: unknown } | undefined)?.error
-    if (failed !== undefined) guard('compaction/end', () => composer.forget(session.id))
+    guard('compaction/end', () => {
+      if (failed !== undefined) {
+        composer.forget(session.id)
+        return
+      }
+      const agent = agentOf(session.id)
+      if (agent !== undefined) idleAttempts.set(agent, clock.now())
+    })
   })
   ctx.on('session/flush', () => guard('session/flush', () => runner.kick()))
   ctx.on('loader/volatile-update', () => guard('settings update', () => {
@@ -653,7 +756,6 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
     logger.warn('/memory was not registered: %s', message)
   }
 
-  const idleAttempts = new WeakMap<Agent, number>()
   const idleRunning = new WeakSet<Agent>()
   const consolidate = (agent: Agent): void => {
     if (lifetime.signal.aborted || agent.session.header.origin === 'subagent') return
@@ -727,7 +829,21 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
     return () => clearTimeout(timer)
   }, 'memory-cloud takeover refresh')
 
+  guard('existing agents', () => {
+    for (const agent of agentRegistryOf(ctx)?.list() ?? []) {
+      if (!liveAgents.has(agent.session.id)) liveAgents.set(agent.session.id, agent)
+      describe(agent.session)
+    }
+  })
+
   void runner.start()
+  void budgets.levelBudget()
+    .then(() => {
+      if (!rollupPlanningDeferred || lifetime.signal.aborted || budgets.levelBudgetKnown() === undefined) return
+      rollupPlanningDeferred = false
+      return runner.rescan()
+    })
+    .catch((error: unknown) => logger.warn('could not plan rollups once the model was known: %s', errorMessage(error)))
   void capture.sealStale()
   void refreshDeepRows()
 

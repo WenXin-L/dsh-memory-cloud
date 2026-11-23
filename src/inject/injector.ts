@@ -109,6 +109,11 @@ export interface Injector<A extends InjectAgent = InjectAgent> {
   frozen(sessionId: string): PackedMemory | undefined
   /** Drop a session's frozen text and abort its pending pack. */
   forget(sessionId: string): void
+  /**
+   * Like {@link forget} for a session whose scope changed: also keeps which
+   * scope's block it last showed, so a stale owner block is still reported.
+   */
+  rescope(sessionId: string): void
   dispose(): void
 }
 
@@ -116,7 +121,7 @@ export interface Injector<A extends InjectAgent = InjectAgent> {
 export interface SurfaceMemoryState {
   /** One of our injected messages is visible. */
   readonly hasMemoryBlock: boolean
-  /** A visible compaction checkpoint body starts with one of our `<memory-cloud>` blocks (engine mode). */
+  /** A visible compaction checkpoint body starts with one of our `<memory-cloud>` blocks (written by our engine). */
   readonly memoryCheckpoint: boolean
   /** Seq of the newest visible compaction checkpoint; changes whenever a compaction lands. */
   readonly epoch: number | undefined
@@ -267,12 +272,8 @@ export function createInjector<A extends InjectAgent>(deps: InjectorDeps<A>): In
     if (entering.some(isMemoryMessage)) return undefined
 
     const surface = scanSurface(session)
-    if (surface.hasMemoryBlock) {
-      warnStale(state, scope, session.id)
-      return undefined
-    }
-    if (!canReadScope(scope)) return undefined
-    if (mode === 'engine' && surface.memoryCheckpoint) return undefined
+    if (surface.hasMemoryBlock || surface.memoryCheckpoint) warnStale(state, scope, session.id)
+    if (surface.hasMemoryBlock || surface.memoryCheckpoint || !canReadScope(scope)) return undefined
 
     const reason: InjectReason = surface.epoch === undefined ? 'session-start' : 'refill'
     const request = {
@@ -334,6 +335,14 @@ export function createInjector<A extends InjectAgent>(deps: InjectorDeps<A>): In
       if (state === undefined) return
       sessions.delete(sessionId)
       state.flight?.controller.abort()
+    },
+
+    rescope(sessionId) {
+      const state = sessions.get(sessionId)
+      if (state === undefined) return
+      state.flight?.controller.abort()
+      delete state.flight
+      delete state.frozen
     },
 
     dispose() {

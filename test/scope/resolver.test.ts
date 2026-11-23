@@ -208,6 +208,46 @@ describe('createScopeResolver', () => {
     expect(child).toMatchObject({ scope: resolver.resolve(session({ sessionId: 'qq-a' })).scope, capture: false, private: false })
   })
 
+  it('resolves a subagent as the root of its delegation chain, whatever its own tags', () => {
+    const sessions = new Map<string, SessionDescriptor>([
+      ['room', session({ sessionId: 'room', cwd: '/home/me/qq-rooms/family', agentPreset: 'qq' })],
+      ['child', session({ sessionId: 'child', origin: 'subagent', parentSession: 'room', delegationDepth: 1, cwd: '/tmp/work', agentPreset: 'explore' })],
+    ])
+    const resolver = createScopeResolver({
+      rules: () => [{ match: 'cwd:/home/me/qq-rooms/*', scope: 'qq-$1' }],
+      unmatched: () => decideUnmatched('owner'),
+      lookup: id => sessions.get(id),
+    })
+    const child = resolver.resolve(sessions.get('child')!)
+    expect(child).toMatchObject({ scope: 'qq-family', capture: false, private: false })
+    expect(child.reason).toContain('subagent of session room')
+    const grandchild = resolver.resolve(session({ sessionId: 'grandchild', origin: 'subagent', parentSession: 'child', delegationDepth: 2 }))
+    expect(grandchild).toMatchObject({ scope: 'qq-family', capture: false, private: false })
+  })
+
+  it('isolates every depth of subagent with the root session', () => {
+    const sessions = new Map<string, SessionDescriptor>([
+      ['root', session({ sessionId: 'root' })],
+      ['c1', session({ sessionId: 'c1', origin: 'subagent', parentSession: 'root', delegationDepth: 1 })],
+    ])
+    const resolver = createScopeResolver({ rules: () => [], unmatched: () => decideUnmatched('isolated'), lookup: id => sessions.get(id) })
+    const rootScope = resolver.resolve(sessions.get('root')!).scope
+    expect(resolver.resolve(sessions.get('c1')!).scope).toBe(rootScope)
+    expect(resolver.resolve(session({ sessionId: 'c2', origin: 'subagent', parentSession: 'c1', delegationDepth: 2 })).scope).toBe(rootScope)
+    expect(resolver.resolve(session({ sessionId: 'c3', origin: 'subagent', parentSession: 'gone', delegationDepth: 1 })).scope).toBe(isolatedScopeId({ sessionId: 'gone' }))
+  })
+
+  it('stops walking a cyclic or failing parent chain', () => {
+    const sessions = new Map<string, SessionDescriptor>([
+      ['a', session({ sessionId: 'a', origin: 'subagent', parentSession: 'b' })],
+      ['b', session({ sessionId: 'b', origin: 'subagent', parentSession: 'a' })],
+    ])
+    const cyclic = createScopeResolver({ rules: () => [], unmatched: () => decideUnmatched('isolated'), lookup: id => sessions.get(id) })
+    expect(cyclic.resolve(sessions.get('a')!)).toMatchObject({ capture: false, private: false })
+    const throwing = createScopeResolver({ rules: () => [], unmatched: () => decideUnmatched('isolated'), lookup: () => { throw new Error('gone') } })
+    expect(throwing.resolve(sessions.get('a')!).scope).toBe(isolatedScopeId({ sessionId: 'b' }))
+  })
+
   it('auto isolates unmatched sessions only while a chat bridge is loaded', () => {
     let bridges: string[] = []
     const resolver = createScopeResolver({ rules: () => [], unmatched: () => decideUnmatched('auto', bridges) })

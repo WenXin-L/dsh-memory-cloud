@@ -40,4 +40,27 @@ describe('budget service', () => {
     expect(expected.memoryBudgetTokens).toBeLessThan(known.memoryBudgetTokens)
     expect(expected.recallLimitTokens).toBeLessThanOrEqual(known.recallLimitTokens)
   })
+
+  it('reports no level budget until the default model lookup has completed', async () => {
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    let route: { provider: string; model: string } | undefined
+    const budgets = createBudgetService({
+      resolveModelInfo: async () => {
+        await held
+        return { context: { contextWindow: 128 * K }, defaultMaxTokens: 1024 }
+      },
+      defaultRoute: () => route,
+      level: () => 3,
+      overrides: () => ({}),
+      now: () => 0,
+    })
+    expect(budgets.levelBudgetKnown()).toBeUndefined()
+    route = { provider: 'fake', model: 'known-1' }
+    expect(budgets.levelBudgetKnown()).toBeUndefined()
+    release()
+    const resolved = await budgets.levelBudget()
+    expect(budgets.levelBudgetKnown()).toEqual(resolved)
+    expect(resolved.quotas.distant).toBeGreaterThan((await setup().levelBudget()).quotas.distant)
+  })
 })

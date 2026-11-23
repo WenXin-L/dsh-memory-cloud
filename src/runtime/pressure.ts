@@ -5,7 +5,7 @@ import { measureRegion } from '../engine/index.ts'
 /** The `ctx.tokenMeter` methods used here. */
 export interface PressureMeter {
   contextPressure(session: Session): { readonly pressureTokens?: number; readonly contextWindow?: number }
-  measure(session: Session): { readonly totalTokens: number }
+  measure(session: Session): { readonly totalTokens: number; readonly baseline?: { readonly kind: string } }
 }
 
 export interface PressureDeps {
@@ -18,28 +18,34 @@ export interface PressureDeps {
 const ROLE_OVERHEAD = 4
 
 /**
- * Context pressure 0..1: the provider-reported prompt size over the window
- * when usage is logged, else the larger of DSH's 4-chars/token estimate and
- * our CJK-aware estimate of the visible surface (the DSH heuristic undercounts
- * Chinese about 2.4×).
+ * Context pressure 0..1 over the reported (else known) window. With a usage
+ * baseline, the meter's `measure()` total: the last provider-reported prompt
+ * plus the heuristic change of the surface since, so it follows a compaction,
+ * which the logged `pressureTokens` does not see until the next request.
+ * Without one, the larger of that heuristic total and our CJK-aware estimate
+ * of the visible surface (the DSH heuristic undercounts Chinese about 2.4×).
+ * `pressureTokens` is only used when the meter cannot measure.
  */
 export function contextPressure(session: Session, deps: PressureDeps): number {
   const meter = deps.meter()
   let window: number | undefined
+  let reported: number | undefined
   try {
-    const reported = meter?.contextPressure(session)
-    if (reported?.contextWindow !== undefined && reported.contextWindow > 0) {
-      if (reported.pressureTokens !== undefined) return clamp(reported.pressureTokens / reported.contextWindow)
-      window = reported.contextWindow
+    const pressure = meter?.contextPressure(session)
+    if (pressure?.contextWindow !== undefined && pressure.contextWindow > 0) {
+      window = pressure.contextWindow
+      reported = pressure.pressureTokens
     }
   } catch {}
   window ??= deps.knownWindow()
   if (window === undefined || window <= 0) return 0
-  let heuristic = 0
+  let measured: { readonly totalTokens: number; readonly baseline?: { readonly kind: string } } | undefined
   try {
-    heuristic = meter?.measure(session).totalTokens ?? 0
+    measured = meter?.measure(session)
   } catch {}
-  return clamp(Math.max(heuristic, surfaceTokens(session, deps.estimator)) / window)
+  if (measured?.baseline?.kind === 'usage') return clamp(measured.totalTokens / window)
+  if (measured === undefined && reported !== undefined) return clamp(reported / window)
+  return clamp(Math.max(measured?.totalTokens ?? 0, surfaceTokens(session, deps.estimator)) / window)
 }
 
 /** CJK-aware estimate of the visible surface: every derived message's text, tool calls, and results. */

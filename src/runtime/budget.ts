@@ -50,8 +50,13 @@ export interface BudgetService {
   budgetNow(agent: Agent): ResolvedBudget
   /** Budget for background work without an agent: the default model's capacity. */
   levelBudget(): Promise<ResolvedBudget>
-  /** {@link levelBudget} from cached model facts, for synchronous callers. */
-  levelBudgetNow(): ResolvedBudget
+  /**
+   * {@link levelBudget} from cached model facts, for synchronous callers;
+   * `undefined` until the default model's lookup has completed (it is
+   * started) and while there is no default model, so callers never act on a
+   * guessed window.
+   */
+  levelBudgetKnown(): ResolvedBudget | undefined
   capacityFor(agent: Agent, signal?: AbortSignal): Promise<CapacityReport>
   /** Context window of the agent's route if already known. */
   knownWindow(agent: Agent): number | undefined
@@ -162,10 +167,12 @@ export function createBudgetService(deps: BudgetServiceDeps): BudgetService {
       return resolve(capacityOf(route, route === undefined ? undefined : await fetchInfo(route)).capacity)
     },
 
-    levelBudgetNow() {
+    levelBudgetKnown() {
       const route = defaultRoute()
-      if (route !== undefined) void fetchInfo(route)
-      return resolve(capacityOf(route, route === undefined ? undefined : infos.get(key(route))).capacity)
+      if (route === undefined) return undefined
+      void fetchInfo(route)
+      const info = infos.get(key(route))
+      return info === undefined ? undefined : resolve(capacityOf(route, info).capacity)
     },
 
     capacityFor,

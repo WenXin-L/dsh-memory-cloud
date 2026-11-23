@@ -31,6 +31,12 @@ export type SessionTagProvider = (session: SessionLike, base: SessionDescriptor)
 export interface DescribeSessionOptions {
   readonly tagProviders?: Iterable<SessionTagProvider>
   readonly onProviderError?: (error: unknown) => void
+  /**
+   * The preset the session runs now, when known. The header's `agentPreset`
+   * is only the creation-time value: a blank session can switch presets
+   * (`agent-preset/selected`), and this replaces it.
+   */
+  readonly agentPreset?: string
 }
 
 export const MAX_SESSION_TAGS = 64
@@ -57,7 +63,7 @@ export function describeSession(session: SessionLike, options: DescribeSessionOp
   const depth = header.delegationDepth
   const cwd = text(header.cwd)
   const parentSession = text(header.parentSession)
-  const agentPreset = text(header.agentPreset)
+  const agentPreset = text(options.agentPreset) ?? text(header.agentPreset)
   const base: SessionDescriptor = {
     sessionId: text(header.id) ?? text(session.id) ?? '',
     ...header.origin === 'subagent' ? { origin: 'subagent' as const } : {},
@@ -97,8 +103,12 @@ export interface SessionTagRegistry {
   delete(sessionId: string): void
 }
 
-export function createSessionTagRegistry(): SessionTagRegistry {
-  const tags = new Map<string, readonly string[]>()
+/**
+ * Pass `tags` to keep the entries somewhere that outlives the registry, e.g.
+ * a map shared by plugin reloads in one process, so live sessions keep the
+ * tags a bridge set before the reload.
+ */
+export function createSessionTagRegistry(tags: Map<string, readonly string[]> = new Map()): SessionTagRegistry {
   return {
     provider: (_session, base) => tags.get(base.sessionId),
     set(sessionId, values) {

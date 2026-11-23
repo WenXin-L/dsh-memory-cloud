@@ -297,6 +297,58 @@ describe('createInjector', () => {
     expect(warnings[0]?.text).toContain('qq-group-1')
   })
 
+  it('still warns about a visible owner block when the session was rescoped before the scope change', async () => {
+    const h = harness()
+    const agent = fakeAgent('s1')
+    await step(h.injector, agent, { turn: 1, step: 1, claimed: [prompt('a')] })
+    h.injector.rescope('s1')
+    h.decision = groupScope()
+    await step(h.injector, agent, { turn: 2, step: 2, claimed: [prompt('b')] })
+    expect(h.logger.lines.filter(line => line.level === 'warn' && line.text.includes('owner memory block'))).toHaveLength(1)
+    expect(h.pack).toHaveBeenCalledTimes(1)
+  })
+
+  it('rescope drops the frozen text and aborts a pending pack', async () => {
+    const slow = deferred<PackedMemory | null>()
+    let calls = 0
+    const h = harness({ pack: () => (++calls === 1 ? slow.promise : Promise.resolve({ text: 'fresh block' })), timeoutMs: 10 })
+    const agent = fakeAgent('s1')
+    await step(h.injector, agent, { turn: 1, step: 1, claimed: [prompt('a')], drop: true })
+    const signal = h.pack.mock.calls[0]?.[0].signal
+    h.injector.rescope('s1')
+    expect(signal?.aborted).toBe(true)
+    slow.resolve({ text: BLOCK })
+    await slow.promise
+    expect(h.injector.frozen('s1')).toBeUndefined()
+    const next = await step(h.injector, agent, { turn: 2, step: 1, claimed: [prompt('b')] })
+    expect(textOf(memoryIn(entered(next))[0])).toBe('fresh block')
+  })
+
+  it('warns about an owner block carried by a memory checkpoint once the scope changed', async () => {
+    const h = harness({ mode: 'engine' })
+    const agent = fakeAgent('s1')
+    await step(h.injector, agent, { turn: 1, step: 1, claimed: [prompt('a')] })
+    agent.session.compact(CHECKPOINT_BLOCK)
+    h.decision = groupScope()
+    const after = await step(h.injector, agent, { turn: 2, step: 2, claimed: [prompt('b')] })
+    await step(h.injector, agent, { turn: 3, step: 3, claimed: [prompt('c')] })
+    expect(memoryIn(entered(after))).toHaveLength(0)
+    const warnings = h.logger.lines.filter(line => line.level === 'warn' && line.text.includes('owner memory block'))
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]?.text).toContain('qq-group-1')
+  })
+
+  it('does not add a block in assist mode while a checkpoint from engine mode carries ours', async () => {
+    const h = harness({ mode: 'engine' })
+    const agent = fakeAgent('s1')
+    await step(h.injector, agent, { turn: 1, step: 1, claimed: [prompt('a')] })
+    agent.session.compact(CHECKPOINT_BLOCK)
+    h.mode = 'assist'
+    const after = await step(h.injector, agent, { turn: 2, step: 2, claimed: [prompt('b')] })
+    expect(memoryIn(entered(after))).toHaveLength(0)
+    expect(h.pack).toHaveBeenCalledTimes(1)
+  })
+
   it('fails open and logs when packing rejects, then retries on a later step', async () => {
     let fail = true
     const h = harness({
