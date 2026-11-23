@@ -12,6 +12,7 @@ import type { ScopeDecision, ScopeId } from '../../src/contracts.ts'
 import {
   COMPACT_CHECKPOINT_SOURCE_KIND, MEMORY_SOURCE_KIND, OWNER_SCOPE, RUNTIME_CONTEXT_SOURCE_KIND, SYNTHETIC_SOURCE_KINDS,
 } from '../../src/contracts.ts'
+import { EMPTY_EPISODE_ERROR } from '../../src/runtime/sources.ts'
 import { createMemorySearch, createMemoryTools, MEMORY_TOOL_NAMES, recallPolicy, registerMemoryTools } from '../../src/tools/index.ts'
 import type { FlagOutput, MemoryToolCaller, MemoryToolDeps, ReadOutput, SearchOutput, TimelineOutput } from '../../src/tools/index.ts'
 import { assistantRecord, at, estimator, eventRecord, stepRecord, toolResultRecord, userRecord, withTempStore } from './helpers.ts'
@@ -185,6 +186,16 @@ describe('memory_search', () => {
     })
   })
 
+  it('reads dotted dates like dashed ones and rejects dates V8 would guess at', async () => {
+    await withHarness(async ({ call }) => {
+      const dotted = await call<SearchOutput>(MEMORY_TOOL_NAMES.search, { query: '', from: '2026.11.03', to: '2026.11.05' })
+      expect(dotted.value.hits.map(hit => hit.id)).toEqual([TRIP, SHOPPING])
+      for (const bound of [{ to: '11-20' }, { from: '11-20' }, { to: 'Nov 20 2026' }, { from: '2026-11-01', to: '11-20' }, { to: '2026-02-30T10:00' }]) {
+        await expect(call(MEMORY_TOOL_NAMES.search, { query: '', ...bound }), JSON.stringify(bound)).rejects.toMatchObject({ code: 'MEMORY_INVALID_ARGS' })
+      }
+    })
+  })
+
   it('drops hits that do not fit the recall cap but keeps the total', async () => {
     await withHarness(async ({ call, state }) => {
       state.limit = 70
@@ -246,10 +257,23 @@ describe('memory_read', () => {
       const past = await call<ReadOutput>(MEMORY_TOOL_NAMES.read, { id: RAW, level: 'raw', offset: 50 })
       expect(past.value).toMatchObject({ offset: 50, count: 0, total: 7, text: '' })
       expect(past.value.notice).toBe('Offset 50 is past the end of this episode (7 conversation records).')
-      expect(store.calls.updateEpisode.map(call => call.patch)).toEqual([
-        { strength: 2, lastRecalledAt: NOW },
-        { strength: 3, lastRecalledAt: NOW },
-      ])
+      expect(store.calls.updateEpisode.map(call => call.patch)).toEqual([{ strength: 2, lastRecalledAt: NOW }])
+    })
+  })
+
+  it('counts one recall per raw read, however many pages it takes', async () => {
+    await withHarness(async ({ call, store }) => {
+      for (let read = 0; read < 2; read++) {
+        let offset: number | undefined = 0
+        let pages = 0
+        while (offset !== undefined) {
+          const { value }: { value: ReadOutput } = await call<ReadOutput>(MEMORY_TOOL_NAMES.read, { id: RAW, level: 'raw', offset, limit: 2 })
+          offset = value.nextOffset
+          pages++
+        }
+        expect(pages).toBe(4)
+      }
+      expect(store.meta(owner, RAW)).toMatchObject({ strength: 3, lastRecalledAt: NOW })
     })
   })
 
@@ -451,6 +475,18 @@ describe('pin, hide and timeline', () => {
       const edge = await call<TimelineOutput>(MEMORY_TOOL_NAMES.timeline, { id: RAW })
       expect(edge.value.entries.map(entry => entry.id)).toEqual([TRIP, TS, LONG, RAW])
       expect(edge.value.entries.at(-1)?.gist).toBe('(sealed; not summarized yet)')
+    })
+  })
+
+  it('leaves empty episodes out of the timeline unless asked about one', async () => {
+    await withHarness(async ({ call, store }) => {
+      const empty = '20261112-1000_eeee5555_1'
+      await store.seed(owner, [{ id: empty, sessionId: 's-b', startedAt: at(2026, 11, 12, 10), status: 'failed', raw: [stepRecord(at(2026, 11, 12, 10), 1)] }])
+      await store.updateEpisode(owner, empty as never, { lastError: `${EMPTY_EPISODE_ERROR}: no conversation content` })
+      const { value } = await call<TimelineOutput>(MEMORY_TOOL_NAMES.timeline, { id: TS, before: 1, after: 1 })
+      expect(value.entries.map(entry => entry.id)).toEqual([TRIP, TS, LONG])
+      const own = await call<TimelineOutput>(MEMORY_TOOL_NAMES.timeline, { id: empty, before: 1, after: 1 })
+      expect(own.value.entries.map(entry => [entry.id, entry.current])).toEqual([[TS, false], [empty, true], [LONG, false]])
     })
   })
 

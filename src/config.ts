@@ -33,7 +33,7 @@ export const Config = z.object({
   idleMinutes: z.number().min(1).default(30).volatile().description('Idle time before the open tail is sealed as an episode.'),
   idleCompactRatio: z.number().min(0).max(1).default(0.5).volatile().description('Context pressure above which an idle agent is compacted with compactNow().'),
   halfLifeDays: z.number().min(0.1).default(14).volatile().description('Forgetting half-life used by the retention score.'),
-  maxEpisodeTokens: tokens().default(32768).volatile().description('Seal an episode once its raw text exceeds this size.'),
+  maxEpisodeTokens: tokens().default(32768).volatile().description('Seal an episode once its raw text exceeds this many tokens; 0 disables size-based sealing.'),
   captureReasoning: z.boolean().default(true).volatile().description('Keep model reasoning blocks in the raw archive.'),
   summarizer,
   overrides: overrides.default({}).volatile().description('Per-field overrides applied over the active level, clamped to the model window.'),

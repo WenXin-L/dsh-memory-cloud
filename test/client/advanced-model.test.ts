@@ -10,6 +10,7 @@ import {
   OVERRIDE_LIMIT,
   overridePlaceholder,
   readDraft,
+  rebaseDraft,
   removeRule,
   wildcardCount,
 } from '../../src/client/advanced-model.ts'
@@ -17,6 +18,7 @@ import type { ConfigDraft } from '../../src/client/advanced-model.ts'
 import { NUMBER_FIELDS, OVERRIDE_FIELDS } from '../../src/client/contract.ts'
 import { en, zh } from '../../src/client/locales.ts'
 import { Config } from '../../src/config.ts'
+import { resolveBudget } from '../../src/pack/budget.ts'
 import { compileGlob } from '../../src/scope/glob.ts'
 import { templateCaptures, UNMATCHED_SESSIONS } from '../../src/scope/index.ts'
 import { translator, volatileConfig } from './fixtures.ts'
@@ -24,7 +26,10 @@ import { translator, volatileConfig } from './fixtures.ts'
 const tEn = translator(en)
 const tZh = translator(zh)
 
-interface MetaNode { readonly meta: { readonly min?: number; readonly max?: number; readonly step?: number }; readonly dict?: Readonly<Record<string, MetaNode>> }
+interface MetaNode {
+  readonly meta: { readonly min?: number; readonly max?: number; readonly step?: number; readonly description?: string }
+  readonly dict?: Readonly<Record<string, MetaNode>>
+}
 const schema = Config as unknown as MetaNode
 
 const withNumbers = (draft: ConfigDraft, numbers: Partial<ConfigDraft['numbers']>): ConfigDraft => ({ ...draft, numbers: { ...draft.numbers, ...numbers } })
@@ -94,6 +99,35 @@ describe('draft', () => {
     expect(tZh('advUnmatchedHint')).toContain('owner')
   })
 
+  it('rebases an unsaved draft onto reloaded settings, re-applying only the fields the user changed', () => {
+    let draft = draftOf(base)
+    draft = { ...draft, summarizer: { ...draft.summarizer, model: 'deepseek-pro' } }
+    draft = withNumbers(draft, { idleMinutes: ' 30 ', halfLifeDays: '7' })
+    draft = { ...draft, overrides: { ...draft.overrides, gistTokens: '40' } }
+    const next = volatileConfig({
+      idleMinutes: 45,
+      summarizer: { provider: 'other', model: 'deepseek-flash', reasoningEffort: 'off' },
+      overrides: { retainTokens: 2048, recallLimitTokens: 1024 },
+      scopeRules: [{ match: 'cwd:/srv/*', scope: 'owner' }],
+      unmatchedSessions: 'owner',
+    })
+    const rebased = rebaseDraft(draft, base, next)
+    expect(readDraft(rebased, next, tEn)).toEqual({
+      errors: {},
+      changed: true,
+      patch: { summarizer: { model: 'deepseek-pro' }, halfLifeDays: 7, overrides: { retainTokens: 2048, recallLimitTokens: 1024, gistTokens: 40 } },
+    })
+    expect(rebased.scopeRules).toEqual(draftOf(next).scopeRules)
+
+    const invalid = rebaseDraft(withNumbers(draftOf(base), { idleMinutes: 'abc' }), base, next)
+    expect(invalid.numbers.idleMinutes).toBe('abc')
+    const ruled = rebaseDraft(editRule(draftOf(base), 1, 'scope', 'office'), base, next)
+    expect(readDraft(ruled, next, tEn).patch).toMatchObject({ scopeRules: [{ match: 'qqbot:*:group:*', scope: 'qq-group-$2' }, { match: 'preset:ptc', scope: 'office' }] })
+    const cleared = rebaseDraft({ ...draftOf(base), overrides: { ...draftOf(base).overrides, retainTokens: '' }, unmatchedSessions: 'isolated' }, base, next)
+    expect(readDraft(cleared, next, tEn).patch).toEqual({ overrides: { recallLimitTokens: 1024 }, unmatchedSessions: 'isolated' })
+    expect(rebaseDraft(draftOf(base), base, next)).toEqual(draftOf(next))
+  })
+
   it('clears every override when all fields are empty', () => {
     const draft = draftOf(base)
     const cleared = { ...draft, overrides: { ...draft.overrides, retainTokens: ' ' } }
@@ -161,10 +195,31 @@ describe('scope rule helpers', () => {
 })
 
 describe('labels', () => {
-  it('shows the level default an empty override falls back to', () => {
-    expect(overridePlaceholder('workingMemoryTokens', 1, tEn)).toBe('level 1: 80% of the window')
-    expect(overridePlaceholder('retainTokens', 3, tEn)).toBe('level 3: 24576')
-    expect(overridePlaceholder('recentSummaryCount', 5, tZh)).toBe('档位 5：2')
+  it('labels the preset value as a ceiling when no live session resolved the level', () => {
+    expect(overridePlaceholder('workingMemoryTokens', 1, tEn)).toBe('level 1 ceiling: 80% of the window')
+    expect(overridePlaceholder('retainTokens', 3, tEn)).toBe('level 3 ceiling: 24576')
+    expect(overridePlaceholder('recentSummaryCount', 5, tZh)).toBe('档位 5 上限：2')
+    expect(tEn('advOverridesHint')).toMatch(/ceiling.*skips the lower-level cap/)
+    expect(tZh('advOverridesHint')).toMatch(/预设上限.*跳过更低档位的限制/)
+  })
+
+  it('shows what an empty override resolves to on the live session, not the ladder-capped preset', () => {
+    const budget = resolveBudget({ level: 3, capacity: { contextWindow: 131072, reservedOutputTokens: 8192 }, headroomTokens: 8192, memoryShare: 0.25 })
+    expect(budget.thresholdTokens).toBeLessThan(131072)
+    const live = { budget, overrides: {} }
+    expect(overridePlaceholder('workingMemoryTokens', 3, tEn, live)).toBe(`level 3, active session: ${budget.thresholdTokens}`)
+    expect(overridePlaceholder('retainTokens', 3, tZh, live)).toBe(`档位 3，当前会话：${budget.retainTokens}`)
+    expect(overridePlaceholder('recallLimitTokens', 3, tEn, live)).toBe(`level 3, active session: ${budget.recallLimitTokens}`)
+    expect(overridePlaceholder('retainTokens', 3, tEn, { budget, overrides: { retainTokens: 4096 } })).toBe('level 3 ceiling: 24576')
+    expect(overridePlaceholder('gistTokens', 3, tEn, { budget, overrides: { retainTokens: 4096 } })).toBe(`level 3, active session: ${budget.gistTokens}`)
+    expect(overridePlaceholder('retainTokens', 4, tEn, live)).toBe('level 4 ceiling: 12288')
+    expect(overridePlaceholder('gistTokens', 3, tEn, { budget: { ...budget, gistTokens: null as unknown as number }, overrides: {} })).toBe('level 3 ceiling: 50')
+  })
+
+  it('says that 0 turns size-based sealing off', () => {
+    expect(tEn('advMaxEpisodeTokensHint')).toMatch(/0 turns size-based sealing off/)
+    expect(tZh('advMaxEpisodeTokensHint')).toMatch(/填 0 则不按大小封存/)
+    expect(schema.dict?.maxEpisodeTokens?.meta.description).toMatch(/0 disables size-based sealing/)
   })
 
   it('words save outcomes', () => {

@@ -147,99 +147,40 @@ export function localTime(time: Millis): string {
 }
 
 const DATE_BOUND = /^(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?$/
+const DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[T ](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,3})?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?$/i
+
+function isCalendarDate(year: number, month: number, day: number): boolean {
+  const probe = new Date(year, month - 1, day)
+  return probe.getMonth() === month - 1 && probe.getDate() === day
+}
 
 /**
- * Parse a `from`/`to` filter: `YYYY`, `YYYY-MM`, `YYYY-MM-DD` (local time;
- * `to` covers the whole named period) or any ISO date-time.
- * @throws RangeError when the text is not a date.
+ * Parse a `from`/`to` filter: `YYYY`, `YYYY-MM`, `YYYY-MM-DD` with `-`, `/` or
+ * `.` (local time; `to` covers the whole named period), or an ISO date-time
+ * `YYYY-MM-DD[T ]HH:mm[:ss[.sss]][Z|±hh:mm]` (local time without an offset).
+ * @throws RangeError for anything else, including dates V8 would guess at.
  */
 export function parseDateBound(text: string, edge: 'from' | 'to'): Millis | undefined {
   const trimmed = text.trim()
   if (trimmed === '') return undefined
-  const match = DATE_BOUND.exec(trimmed.replaceAll('/', '-'))
+  const invalid = (): RangeError => new RangeError(`invalid date "${text}"`)
+  const match = DATE_BOUND.exec(trimmed.replace(/[/.]/g, '-'))
   if (match !== null) {
     const year = Number(match[1])
     const month = match[2] === undefined ? undefined : Number(match[2])
     const day = match[3] === undefined ? undefined : Number(match[3])
-    if (month !== undefined && (month < 1 || month > 12)) throw new RangeError(`invalid date "${text}"`)
-    if (day !== undefined) {
-      const probe = new Date(year, month! - 1, day)
-      if (probe.getMonth() !== month! - 1 || probe.getDate() !== day) throw new RangeError(`invalid date "${text}"`)
-    }
+    if (month !== undefined && (month < 1 || month > 12)) throw invalid()
+    if (day !== undefined && !isCalendarDate(year, month!, day)) throw invalid()
     if (edge === 'from') return new Date(year, (month ?? 1) - 1, day ?? 1).getTime()
     if (day !== undefined) return new Date(year, month! - 1, day + 1).getTime() - 1
     if (month !== undefined) return new Date(year, month, 1).getTime() - 1
     return new Date(year + 1, 0, 1).getTime() - 1
   }
-  const parsed = Date.parse(trimmed)
-  if (!Number.isFinite(parsed)) throw new RangeError(`invalid date "${text}"`)
+  const dateTime = DATE_TIME.exec(trimmed)
+  if (dateTime === null || !isCalendarDate(Number(dateTime[1]), Number(dateTime[2]), Number(dateTime[3]))) throw invalid()
+  const parsed = Date.parse(trimmed.toUpperCase().replace(' ', 'T'))
+  if (!Number.isFinite(parsed)) throw invalid()
   return parsed
-}
-
-export interface Frontmatter {
-  readonly body: string
-  /** Raw text of each top-level key, including indented continuation lines. */
-  readonly fields: ReadonlyMap<string, string>
-}
-
-const FRONTMATTER_KEY = /^([A-Za-z_][\w-]*)\s*:(.*)$/
-
-/** Split a leading `---` YAML-like frontmatter block from a tier file, leniently. */
-export function splitFrontmatter(text: string): Frontmatter {
-  const fields = new Map<string, string>()
-  const opening = /^\uFEFF?---[ \t]*\r?\n/.exec(text)
-  if (opening === null) return { body: text, fields }
-  const rest = text.slice(opening[0].length)
-  const closing = /^(?:---|\.\.\.)[ \t]*$/m.exec(rest)
-  if (closing === null) return { body: text, fields }
-  const block = rest.slice(0, closing.index)
-  const body = rest.slice(closing.index + closing[0].length).replace(/^\r?\n/, '')
-  let key: string | undefined
-  for (const line of block.split(/\r?\n/)) {
-    const top = /^\s/.test(line) || line.startsWith('- ') ? null : FRONTMATTER_KEY.exec(line)
-    if (top !== null) {
-      key = top[1]!
-      fields.set(key, top[2]!.trim())
-    } else if (key !== undefined && line.trim() !== '') {
-      const previous = fields.get(key)
-      fields.set(key, previous === '' || previous === undefined ? line : `${previous}\n${line}`)
-    }
-  }
-  return { body, fields }
-}
-
-function unquote(text: string): string {
-  const trimmed = text.trim()
-  const quoted = /^(["'])(.*)\1$/.exec(trimmed)
-  return quoted === null ? trimmed : quoted[2]!
-}
-
-function collectStrings(value: unknown, out: string[]): void {
-  if (typeof value === 'string') out.push(value)
-  else if (Array.isArray(value)) for (const item of value) collectStrings(item, out)
-  else if (typeof value === 'object' && value !== null) for (const item of Object.values(value)) collectStrings(item, out)
-}
-
-/** Read a frontmatter list written as `[a, b]`, a JSON array, `- item` lines, or comma-separated text. */
-export function parseListField(raw: string | undefined): readonly string[] {
-  if (raw === undefined) return []
-  const trimmed = raw.trim()
-  if (trimmed === '' || trimmed === '[]') return []
-  let items: string[]
-  if (trimmed.startsWith('[')) {
-    try {
-      const out: string[] = []
-      collectStrings(JSON.parse(trimmed), out)
-      items = out
-    } catch {
-      items = trimmed.replace(/^\[|\]$/g, '').split(/[,，、]/)
-    }
-  } else if (trimmed.split('\n').some(line => line.trim().startsWith('- '))) {
-    items = trimmed.split('\n').filter(line => line.trim().startsWith('- ')).map(line => line.trim().slice(2))
-  } else {
-    items = trimmed.split(/[,，、]/)
-  }
-  return items.map(unquote).filter(item => item !== '')
 }
 
 const ISO_DATE = /\b(\d{4})-(\d{2})-(\d{2})/g

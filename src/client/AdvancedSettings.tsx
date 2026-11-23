@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { CompressionLevel } from '../contracts.ts'
+import type { CompressionLevel, ResolvedBudget } from '../contracts.ts'
 import { UNMATCHED_SESSIONS } from '../scope/guard.ts'
-import { addRule, configNoticeView, draftOf, editRule, moveRule, NUMBER_LIMITS, overridePlaceholder, readDraft, readNumber, removeRule } from './advanced-model.ts'
+import {
+  addRule, configNoticeView, draftOf, editRule, moveRule, NUMBER_LIMITS, overridePlaceholder, readDraft, readNumber, rebaseDraft, removeRule,
+} from './advanced-model.ts'
 import type { ConfigDraft } from './advanced-model.ts'
 import type { ConfigSnapshot } from './config-store.ts'
 import type { ConfigPatch, NumberField, SummarizerField, VolatileConfig } from './contract.ts'
@@ -18,6 +20,8 @@ export interface AdvancedSettingsProps {
   readonly saveConfig: (patch: ConfigPatch) => void
   /** Configured level from the status, for override placeholders. */
   readonly level: CompressionLevel | undefined
+  /** Resolved budget of the live session in the status, for override placeholders. */
+  readonly budget: ResolvedBudget | undefined
 }
 
 interface Form {
@@ -81,16 +85,16 @@ function TextInput({ value, placeholder, error, disabled, numeric, onChange }: {
 }
 
 /** Collapsible editor for every live setting besides level and mode; loads on first open. */
-export function AdvancedSettings({ t, useConfig, loadConfig, saveConfig, level }: AdvancedSettingsProps): ReactNode {
+export function AdvancedSettings({ t, useConfig, loadConfig, saveConfig, level, budget }: AdvancedSettingsProps): ReactNode {
   const snapshot = useConfig(value => value)
   const [form, setForm] = useState<Form | undefined>(undefined)
   const view = snapshot.view
 
   useEffect(() => {
     if (view === undefined) return
-    setForm(current => current !== undefined && readDraft(current.draft, current.base, t).changed
-      ? { ...current, base: view.config }
-      : { draft: draftOf(view.config), base: view.config })
+    setForm(current => current === undefined
+      ? { draft: draftOf(view.config), base: view.config }
+      : { draft: rebaseDraft(current.draft, current.base, view.config), base: view.config })
   }, [view])
 
   const update = (change: (draft: ConfigDraft) => ConfigDraft): void => {
@@ -176,7 +180,7 @@ export function AdvancedSettings({ t, useConfig, loadConfig, saveConfig, level }
               <Field key={field} label={t(`override_${field}`)} error={errors[`overrides.${field}`]}>
                 <TextInput
                   value={draft.overrides[field]}
-                  placeholder={overridePlaceholder(field, level ?? form.base.level, t)}
+                  placeholder={overridePlaceholder(field, level ?? form.base.level, t, budget === undefined ? undefined : { budget, overrides: form.base.overrides })}
                   error={errors[`overrides.${field}`]}
                   disabled={locked}
                   numeric

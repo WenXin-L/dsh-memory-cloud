@@ -6,6 +6,8 @@ import type {
   ScopeId, StoreState, TokenEstimator,
 } from '../../src/contracts.ts'
 import { DEFAULT_TOKEN_ESTIMATOR_OPTIONS } from '../../src/contracts.ts'
+import { parseTierFile, renderTierFile } from '../../src/store/index.ts'
+import type { Tier, TierDocument } from '../../src/store/index.ts'
 
 const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u
 
@@ -42,15 +44,29 @@ export interface SeedEpisode {
   readonly raw?: readonly RawEventRecord[]
 }
 
-function frontmatter(episode: SeedEpisode): string {
-  const lines = ['---', `episode: ${episode.id}`, `keywords: ${JSON.stringify(episode.keywords ?? [])}`]
-  if (episode.people !== undefined) lines.push(`people: ${JSON.stringify(episode.people)}`)
-  if (episode.dates !== undefined) {
-    lines.push('dates:')
-    for (const date of episode.dates) lines.push(`  - date: ${date}`, '    what: something')
-  }
-  lines.push(`summarizedAt: 2026-12-31T00:00:00.000Z`, '---', '')
-  return lines.join('\n')
+/** A tier file as the real store writes it; people, dates and keywords go on the summary tier only. */
+function tierFile(scope: ScopeId, episode: SeedEpisode, tier: Tier, body: string): string {
+  const raw = episode.raw ?? []
+  return renderTierFile({
+    id: episode.id as EpisodeId,
+    scope,
+    sessionId: episode.sessionId ?? 'session-1',
+    tier,
+    seq: { first: raw[0]?.seq ?? 1, last: raw.at(-1)?.seq ?? 1 },
+    time: episode.endedAt === undefined ? { start: episode.startedAt } : { start: episode.startedAt, end: episode.endedAt },
+    provider: 'fake',
+    model: 'fake-1',
+    promptVersion: 'test',
+    summarizedAt: Date.UTC(2026, 11, 31),
+    tokens: estimator.estimate(body),
+    ...tier === 'summary'
+      ? {
+          keywords: [...episode.keywords ?? []],
+          ...episode.people === undefined ? {} : { people: [...episode.people] },
+          ...episode.dates === undefined ? {} : { dates: episode.dates.map(date => ({ date, what: 'something' })) },
+        }
+      : {},
+  }, body)
 }
 
 /** File-backed `MemoryStore` covering what the tools use; other methods are unused here. */
@@ -75,8 +91,8 @@ export class FakeStore implements MemoryStore {
       const dir = this.episodeDir(scope, id)
       await mkdir(dir, { recursive: true })
       const summarized = episode.gist !== undefined || episode.summary !== undefined
-      if (episode.gist !== undefined) await writeFile(join(dir, 'gist.md'), `${frontmatter(episode)}${episode.gist}\n`)
-      if (episode.summary !== undefined) await writeFile(join(dir, 'summary.md'), `${frontmatter(episode)}${episode.summary}\n`)
+      if (episode.gist !== undefined) await writeFile(join(dir, 'gist.md'), tierFile(scope, episode, 'gist', episode.gist))
+      if (episode.summary !== undefined) await writeFile(join(dir, 'summary.md'), tierFile(scope, episode, 'summary', episode.summary))
       const raw = episode.raw ?? []
       await writeFile(join(dir, 'raw.jsonl'), raw.map(record => `${JSON.stringify(record)}\n`).join(''))
       metas.push({
@@ -133,13 +149,19 @@ export class FakeStore implements MemoryStore {
     return next
   }
 
-  async readTier(scope: ScopeId, id: EpisodeId, tier: 'summary' | 'gist'): Promise<string | undefined> {
+  /** Counted in `calls.readTier`, like {@link readTier}. */
+  async readTierDocument(scope: ScopeId, id: EpisodeId, tier: Tier): Promise<TierDocument | undefined> {
     this.calls.readTier++
     try {
-      return await readFile(join(this.episodeDir(scope, id), `${tier}.md`), 'utf8')
+      return parseTierFile(await readFile(join(this.episodeDir(scope, id), `${tier}.md`), 'utf8'))
     } catch {
       return undefined
     }
+  }
+
+  /** The body only, without frontmatter, as the real store returns it. */
+  async readTier(scope: ScopeId, id: EpisodeId, tier: Tier): Promise<string | undefined> {
+    return (await this.readTierDocument(scope, id, tier))?.body
   }
 
   async readRaw(scope: ScopeId, id: EpisodeId, page: { readonly offset: number; readonly limit: number }): Promise<RawPage> {

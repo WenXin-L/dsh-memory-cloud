@@ -1,4 +1,5 @@
 import type { Clock, EpisodeId, EpisodeMeta, MemoryIndex, MemoryStore, RawEventRecord, ScopeDecision, ScopeId, TokenEstimator } from '../contracts.ts'
+import { isEmptyEpisode } from '../runtime/sources.ts'
 import { canReadScope } from '../scope/guard.ts'
 import { percent, recallPolicy } from './policy.ts'
 import type { RecallAllowance } from './policy.ts'
@@ -6,7 +7,7 @@ import { isConversationRecord, renderRawRecord } from './raw.ts'
 import { formatHit, formatTimelineEntry } from './render.ts'
 import type { FlagOutput, ReadLevel, ReadOutput, SearchHitOutput, SearchOutput, TimelineEntryOutput, TimelineOutput } from './render.ts'
 import type { MemorySearch } from './search.ts'
-import { localDateTime, parseDateBound, splitFrontmatter, truncateToTokens } from './text.ts'
+import { localDateTime, parseDateBound, truncateToTokens } from './text.ts'
 
 export interface ToolLogger {
   warn(message: string, ...args: unknown[]): void
@@ -196,9 +197,7 @@ export function createMemoryToolHandlers<A>(deps: ToolDeps<A>): MemoryToolHandle
   }
 
   async function readTierBody(scope: ScopeId, id: EpisodeId, tier: 'summary' | 'gist'): Promise<string | undefined> {
-    const text = await store.readTier(scope, id, tier)
-    if (text === undefined) return undefined
-    const body = splitFrontmatter(text).body.trim()
+    const body = (await store.readTier(scope, id, tier))?.trim()
     return body === '' ? undefined : body
   }
 
@@ -312,7 +311,7 @@ export function createMemoryToolHandlers<A>(deps: ToolDeps<A>): MemoryToolHandle
     } else if (lines.length === 0) {
       lines.push(includeSystem ? '(no conversation in this range, only bookkeeping events)' : '(no text in this range)')
     }
-    if (view.records.length > 0) await recall(scope, meta)
+    if (offset === 0 && view.records.length > 0) await recall(scope, meta)
     return {
       id: meta.id,
       date: localDateTime(meta.startedAt),
@@ -378,7 +377,7 @@ export function createMemoryToolHandlers<A>(deps: ToolDeps<A>): MemoryToolHandle
     const id = parseEpisodeId(args.id)
     const { meta, index } = await findEpisode(scope, id, false)
     const ordered = index.episodes
-      .filter(episode => episode.scope === scope && !episode.hidden)
+      .filter(episode => episode.scope === scope && !episode.hidden && (episode.id === id || !isEmptyEpisode(episode)))
       .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id))
     const at = ordered.findIndex(episode => episode.id === id)
     const before = clampInt(args.before, TIMELINE_DEFAULT_SPAN, 0, TIMELINE_MAX_SPAN)

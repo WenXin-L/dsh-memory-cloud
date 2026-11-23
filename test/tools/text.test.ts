@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { SYNTHETIC_SOURCE_KINDS } from '../../src/contracts.ts'
 import { isConversationRecord, renderRawRecord } from '../../src/tools/raw.ts'
-import {
-  extractQueryDates, parseDateBound, parseListField, queryTerms, splitFrontmatter, tokenize, truncateToTokens,
-} from '../../src/tools/text.ts'
+import { extractQueryDates, parseDateBound, queryTerms, tokenize, truncateToTokens } from '../../src/tools/text.ts'
 import { at, estimator } from './helpers.ts'
 
 describe('tokenize', () => {
@@ -44,29 +42,17 @@ describe('dates', () => {
     expect(() => parseDateBound('2026-13', 'to')).toThrow(RangeError)
     expect(() => parseDateBound('last week', 'to')).toThrow(RangeError)
   })
-})
 
-describe('frontmatter', () => {
-  it('splits frontmatter and reads list fields in several spellings', () => {
-    const { body, fields } = splitFrontmatter([
-      '---',
-      'keywords: ["猫粮", "皇家"]',
-      'people: 小明, 小红',
-      'tags:',
-      '  - a',
-      '  - "b"',
-      'dates:',
-      '  - date: 2026-11-08',
-      '    what: trip',
-      '---',
-      'Body text.',
-    ].join('\n'))
-    expect(body).toBe('Body text.')
-    expect(parseListField(fields.get('keywords'))).toEqual(['猫粮', '皇家'])
-    expect(parseListField(fields.get('people'))).toEqual(['小明', '小红'])
-    expect(parseListField(fields.get('tags'))).toEqual(['a', 'b'])
-    expect(fields.get('dates')).toContain('2026-11-08')
-    expect(splitFrontmatter('no frontmatter').body).toBe('no frontmatter')
+  it('reads dots and slashes like dashes and accepts only strict ISO date-times otherwise', () => {
+    expect(parseDateBound('2026.11.20', 'to')).toBe(at(2026, 11, 21, 0) - 1)
+    expect(parseDateBound('2026/11/20', 'from')).toBe(at(2026, 11, 20, 0))
+    expect(parseDateBound('2026.11', 'to')).toBe(at(2026, 12, 1, 0) - 1)
+    expect(parseDateBound('2026-11-20 10:30', 'from')).toBe(at(2026, 11, 20, 10, 30))
+    expect(parseDateBound('2026-11-20T10:30', 'to')).toBe(at(2026, 11, 20, 10, 30))
+    expect(parseDateBound('2026-11-20T10:30:15.250+08:00', 'from')).toBe(Date.UTC(2026, 10, 20, 2, 30, 15, 250))
+    for (const text of ['11-20', '11/20', 'Nov 20 2026', '20 November 2026', '2026-11-20T10', '2026-11-20T25:00', '2026-02-30T10:00', '2026-11-20T10:00+0800', '1763600000000', '2026年11月20日']) {
+      expect(() => parseDateBound(text, 'to'), text).toThrow(RangeError)
+    }
   })
 })
 

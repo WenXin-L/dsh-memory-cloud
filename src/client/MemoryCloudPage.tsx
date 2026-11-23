@@ -168,7 +168,14 @@ export function MemoryCloudPage(props: MemoryCloudPageProps): ReactNode {
         <Notice snapshot={snapshot} actions={['takeover', 'restore']} t={t} />
       </section>
 
-      <AdvancedSettings t={t} useConfig={props.useConfig} loadConfig={props.loadConfig} saveConfig={props.saveConfig} level={status?.configured.level} />
+      <AdvancedSettings
+        t={t}
+        useConfig={props.useConfig}
+        loadConfig={props.loadConfig}
+        saveConfig={props.saveConfig}
+        level={status?.configured.level}
+        budget={status?.agent?.budget}
+      />
     </div>
   )
 }

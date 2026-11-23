@@ -1,9 +1,8 @@
 import type { EpisodeId, EpisodeMeta, MemoryIndex, MemoryStore, Millis, ScopeId, TokenEstimator } from '../contracts.ts'
+import { isEmptyEpisode } from '../runtime/sources.ts'
+import type { FileMemoryStore, TierDocument } from '../store/index.ts'
 import { isConversationRecord, rawRecordText } from './raw.ts'
-import {
-  extractQueryDates, isCjk, isoDatesIn, localDate, normalize, parseListField, queryTerms, splitFrontmatter, tokenize,
-  truncateToTokens,
-} from './text.ts'
+import { extractQueryDates, isCjk, isoDatesIn, localDate, normalize, queryTerms, tokenize, truncateToTokens } from './text.ts'
 import type { Tokens } from './text.ts'
 
 export interface MemorySearchOptions {
@@ -22,7 +21,7 @@ export interface MemorySearchOptions {
 }
 
 export interface MemorySearchDeps {
-  readonly store: MemoryStore
+  readonly store: Pick<MemoryStore, 'readIndex' | 'readRaw'> & Pick<FileMemoryStore, 'readTierDocument'>
   readonly estimator: TokenEstimator
   readonly options?: MemorySearchOptions
 }
@@ -130,6 +129,19 @@ function phrases(values: readonly string[]): Phrase[] {
   return texts.map(text => ({ text, terms: [...new Set(tokenize(text).terms)], cjk: [...text].some(isCjk) }))
 }
 
+function stringsOf(value: unknown): readonly string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+/** `YYYY-MM-DD` of each dated fact in a tier file's `dates: [{date, what}]`. */
+function factDatesOf(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((fact: unknown) => {
+    const date: unknown = typeof fact === 'object' && fact !== null ? (fact as { readonly date?: unknown }).date : undefined
+    return typeof date === 'string' ? isoDatesIn(date) : []
+  })
+}
+
 function matchesQuery(phrase: Phrase, queryNorm: string, terms: ReadonlySet<string>): boolean {
   if (phrase.cjk && [...phrase.text].length >= 2 && queryNorm.includes(phrase.text)) return true
   if (phrase.terms.length === 0) return false
@@ -183,9 +195,9 @@ export function createMemorySearch(deps: MemorySearchDeps): MemorySearch {
   const caches = new Map<ScopeId, ScopeCache>()
   const pending = new Map<ScopeId, { readonly updatedAt: Millis; readonly token: symbol; readonly promise: Promise<ScopeCache> }>()
 
-  async function readTier(scope: ScopeId, id: EpisodeId, tier: 'gist' | 'summary'): Promise<string | undefined> {
+  async function readDocument(scope: ScopeId, id: EpisodeId, tier: 'gist' | 'summary'): Promise<TierDocument | undefined> {
     try {
-      return await store.readTier(scope, id, tier)
+      return await store.readTierDocument(scope, id, tier)
     } catch {
       return undefined
     }
@@ -193,17 +205,15 @@ export function createMemorySearch(deps: MemorySearchDeps): MemorySearch {
 
   async function loadDoc(scope: ScopeId, meta: EpisodeMeta, signature: string): Promise<Doc> {
     const hasTiers = meta.status === 'summarized' || meta.tokens.gist !== undefined || meta.tokens.summary !== undefined
-    const [gistFile, summaryFile] = hasTiers
-      ? await Promise.all([readTier(scope, meta.id, 'gist'), readTier(scope, meta.id, 'summary')])
+    const documents = hasTiers
+      ? await Promise.all([readDocument(scope, meta.id, 'gist'), readDocument(scope, meta.id, 'summary')])
       : [undefined, undefined]
-    const gistParts = gistFile === undefined ? undefined : splitFrontmatter(gistFile)
-    const summaryParts = summaryFile === undefined ? undefined : splitFrontmatter(summaryFile)
-    const field = (key: string): string | undefined => summaryParts?.fields.get(key) ?? gistParts?.fields.get(key)
-    const gist = gistParts?.body.trim() || undefined
-    const summary = summaryParts?.body.trim() || undefined
-    const keywords = phrases([...meta.keywords, ...parseListField(field('keywords'))])
-    const people = phrases(parseListField(field('people')))
-    const factDates = isoDatesIn(field('dates'))
+    const [gistDocument, summaryDocument] = documents
+    const gist = gistDocument?.body.trim() || undefined
+    const summary = summaryDocument?.body.trim() || undefined
+    const keywords = phrases([...meta.keywords, ...documents.flatMap(document => stringsOf(document?.frontmatter?.keywords ?? document?.fields.keywords))])
+    const people = phrases(documents.flatMap(document => stringsOf(document?.frontmatter?.people ?? document?.fields.people)))
+    const factDates = [...new Set(documents.flatMap(document => factDatesOf(document?.frontmatter?.dates ?? document?.fields.dates)))]
 
     const tf = new Map<string, number>()
     let length = 0
@@ -335,7 +345,7 @@ export function createMemorySearch(deps: MemorySearchDeps): MemorySearch {
     const hasDates = dates.full.length > 0 || dates.monthDay.length > 0
     const browse = terms.length === 0 && !hasDates
 
-    const candidates = [...cache.docs.values()].filter(doc => !doc.meta.hidden && inRange(doc.meta, query.from, query.to))
+    const candidates = [...cache.docs.values()].filter(doc => !doc.meta.hidden && !isEmptyEpisode(doc.meta) && inRange(doc.meta, query.from, query.to))
     const raw = query.includeRaw === true && terms.length > 0 ? await scanRaw(query.scope, candidates, terms, signal) : undefined
 
     const scored: { readonly doc: Doc; readonly score: number }[] = []

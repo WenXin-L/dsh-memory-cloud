@@ -2,7 +2,7 @@
  * Pure model of the Advanced section: a string-valued form draft seeded from
  * the live settings, its validation, and the `setConfig` patch it implies.
  */
-import type { CompressionLevel, ScopeRule, TokenBudget } from '../contracts.ts'
+import type { CompressionLevel, ResolvedBudget, ScopeRule, TokenBudget } from '../contracts.ts'
 import { LEVEL_PRESETS } from '../contracts.ts'
 import type { UnmatchedSessions } from '../scope/guard.ts'
 import type { ConfigNotice } from './config-store.ts'
@@ -39,7 +39,7 @@ export interface ConfigDraft {
   readonly summarizer: Readonly<Record<SummarizerField, string>>
   readonly numbers: Readonly<Record<NumberField, string>>
   readonly captureReasoning: boolean
-  /** An empty string uses the level default. */
+  /** An empty string keeps the level's own value. */
   readonly overrides: Readonly<Record<OverrideField, string>>
   readonly scopeRules: readonly DraftRule[]
   readonly unmatchedSessions: UnmatchedSessions
@@ -152,6 +152,39 @@ export function readDraft(draft: ConfigDraft, base: VolatileConfig, t: Translate
   return { errors, patch, changed: Object.keys(errors).length > 0 || Object.keys(patch).length > 0 }
 }
 
+const sameText = (text: string, value: string): boolean => text.trim() === value.trim()
+
+/** Whether a number field's text still means `value`; blank means unset. */
+function sameNumber(text: string, value: number | undefined): boolean {
+  const trimmed = text.trim()
+  return trimmed === '' ? value === undefined : Number(trimmed) === value
+}
+
+/**
+ * Carry an unsaved draft over to reloaded settings (a three-way rebase): start
+ * from `next` and re-apply only the fields where `draft` differs from
+ * `previous`, the settings it was edited against, so a value changed elsewhere
+ * in the meantime is not written back by the next save.
+ */
+export function rebaseDraft(draft: ConfigDraft, previous: VolatileConfig, next: VolatileConfig): ConfigDraft {
+  const fresh = draftOf(next)
+  const rules = draft.scopeRules.map(rule => ({ match: rule.match.trim(), scope: rule.scope.trim() }))
+  return {
+    summarizer: Object.fromEntries(SUMMARIZER_FIELDS.map(field =>
+      [field, sameText(draft.summarizer[field], previous.summarizer[field]) ? fresh.summarizer[field] : draft.summarizer[field]],
+    )) as Record<SummarizerField, string>,
+    numbers: Object.fromEntries(NUMBER_FIELDS.map(field =>
+      [field, sameNumber(draft.numbers[field], previous[field]) ? fresh.numbers[field] : draft.numbers[field]],
+    )) as Record<NumberField, string>,
+    captureReasoning: draft.captureReasoning === previous.captureReasoning ? fresh.captureReasoning : draft.captureReasoning,
+    overrides: Object.fromEntries(OVERRIDE_FIELDS.map(field =>
+      [field, sameNumber(draft.overrides[field], previous.overrides[field]) ? fresh.overrides[field] : draft.overrides[field]],
+    )) as Record<OverrideField, string>,
+    scopeRules: sameRules(rules, previous.scopeRules) ? fresh.scopeRules : draft.scopeRules,
+    unmatchedSessions: draft.unmatchedSessions === previous.unmatchedSessions ? fresh.unmatchedSessions : draft.unmatchedSessions,
+  }
+}
+
 export function addRule(draft: ConfigDraft): ConfigDraft {
   const id = draft.scopeRules.reduce((highest, rule) => Math.max(highest, rule.id + 1), 0)
   return { ...draft, scopeRules: [...draft.scopeRules, { id, match: '', scope: '' }] }
@@ -180,15 +213,38 @@ function budgetValue(budget: TokenBudget, t: Translate): string {
   return budget.kind === 'ratio' ? t('advWindowShare', { percent: formatPercent(budget.ratio) }) : String(budget.tokens)
 }
 
-/** What an empty override falls back to at `level`, as an input placeholder. */
-export function overridePlaceholder(field: OverrideField, level: CompressionLevel, t: Translate): string {
+const RESOLVED_FIELDS: Readonly<Record<OverrideField, Exclude<keyof ResolvedBudget, 'level' | 'quotas' | 'thresholdRatio'>>> = {
+  workingMemoryTokens: 'thresholdTokens',
+  retainTokens: 'retainTokens',
+  memoryBudgetTokens: 'memoryBudgetTokens',
+  recentSummaryCount: 'recentSummaryCount',
+  recentSummaryTokens: 'recentSummaryTokens',
+  gistTokens: 'gistTokens',
+  recallLimitTokens: 'recallLimitTokens',
+}
+
+/** A live session's resolved budget and the overrides it was resolved with. */
+export interface LiveBudget {
+  readonly budget: ResolvedBudget
+  readonly overrides: VolatileConfig['overrides']
+}
+
+/**
+ * Input placeholder of an empty override at `level`. With a live budget at that
+ * level that does not override `field`, the value it resolved to on the
+ * session's model; otherwise the level's preset ceiling, which lower levels and
+ * the window may cap further (an override skips the lower-level cap).
+ */
+export function overridePlaceholder(field: OverrideField, level: CompressionLevel, t: Translate, live?: LiveBudget): string {
+  const resolved: unknown = live?.budget.level === level && live.overrides[field] === undefined ? live.budget[RESOLVED_FIELDS[field]] : undefined
+  if (typeof resolved === 'number' && Number.isFinite(resolved)) return t('advLevelResolved', { level, value: String(resolved) })
   const preset = LEVEL_PRESETS[level]
   const value = field === 'workingMemoryTokens'
     ? budgetValue(preset.workingMemory, t)
     : field === 'retainTokens'
       ? budgetValue(preset.retain, t)
       : String(preset[field])
-  return t('advLevelDefault', { level, value })
+  return t('advLevelCeiling', { level, value })
 }
 
 export function configNoticeView(notice: ConfigNotice, t: Translate): NoticeView {

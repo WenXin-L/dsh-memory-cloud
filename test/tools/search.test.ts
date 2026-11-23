@@ -1,6 +1,11 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { ScopeId } from '../../src/contracts.ts'
 import { OWNER_SCOPE, RUNTIME_CONTEXT_SOURCE_KIND } from '../../src/contracts.ts'
+import { EMPTY_EPISODE_ERROR } from '../../src/runtime/sources.ts'
+import { createFileMemoryStore } from '../../src/store/index.ts'
 import { createMemorySearch } from '../../src/tools/search.ts'
 import { parseDateBound } from '../../src/tools/text.ts'
 import { assistantRecord, at, estimator, eventRecord, stepRecord, userRecord, withTempStore } from './helpers.ts'
@@ -188,6 +193,48 @@ describe('createMemorySearch', () => {
       expect(trip.hits.map(hit => hit.id)).toEqual(['20261105-2100_aaaa1111_3'])
       const day = await search.search({ scope: owner, query: '2026-11-18' })
       expect(day.hits.map(hit => hit.id)).toEqual(['20261118-1500_cccc3333_1'])
+    })
+  })
+
+  it('reads people and dated facts from the summary frontmatter of the real store', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'memory-cloud-search-'))
+    try {
+      const store = createFileMemoryStore({ root, clock: { now: () => at(2026, 11, 23) } })
+      const opened = await store.openEpisode(owner, { sessionId: 'session-ab12cd34', startedAt: at(2026, 11, 20, 10), firstSeq: 1 })
+      await store.appendRaw(owner, opened.id, [userRecord('周末一起去爬山吧', at(2026, 11, 20, 10, 1), 1)])
+      await store.sealEpisode(owner, opened.id, { reason: 'idle', endedAt: at(2026, 11, 20, 10, 5), lastSeq: 1, rawTokens: 10 })
+      await store.writeSummary(owner, opened.id, {
+        gist: '约好周末去爬山。',
+        summary: '用户约朋友周末一起去爬山，要早点出发。',
+        ongoing: [],
+        importance: 5,
+        keywords: ['爬山'],
+        people: ['Alice'],
+        dates: [{ date: '2026-11-28', what: '爬山' }],
+        promises: [],
+      }, { provider: 'fake', model: 'fake-1', promptVersion: 'test', summarizedAt: at(2026, 11, 21) }, { summary: 20, gist: 10 })
+      const search = createMemorySearch({ store, estimator })
+      for (const query of ['2026-11-28', '11月28日', 'Alice']) {
+        expect((await search.search({ scope: owner, query })).hits.map(hit => hit.id), query).toEqual([opened.id])
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('leaves out empty episodes, which are never summarized or packed', async () => {
+    await withTempStore(async store => {
+      await seeded(store, [
+        { id: '20261122-1000_ffff6666_1', startedAt: at(2026, 11, 22, 10), status: 'failed', raw: [stepRecord(at(2026, 11, 22, 10))] },
+        { id: '20261123-1000_ffff6666_2', startedAt: at(2026, 11, 23, 10), status: 'failed', raw: [stepRecord(at(2026, 11, 23, 10))] },
+      ])
+      await store.updateEpisode(owner, '20261122-1000_ffff6666_1' as never, { lastError: `${EMPTY_EPISODE_ERROR}: no conversation content` })
+      await store.updateEpisode(owner, '20261123-1000_ffff6666_2' as never, { lastError: 'timeout' })
+      const search = createMemorySearch({ store, estimator })
+      const listed = await search.search({ scope: owner, query: '', from: at(2026, 11, 22, 0), limit: 50 })
+      expect(listed.hits.map(hit => hit.id)).toEqual(['20261123-1000_ffff6666_2'])
+      expect(listed.total).toBe(1)
+      expect((await search.search({ scope: owner, query: '2026-11-22' })).total).toBe(0)
     })
   })
 
