@@ -534,4 +534,4 @@ More documentation:
 
 ## License
 
-[MIT](LICENSE)
+Released under the [GNU General Public License v3.0](LICENSE) (SPDX: `GPL-3.0-only`).

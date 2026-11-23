@@ -2,7 +2,7 @@
   "name": "dsh-memory-cloud-brain",
   "version": "0.0.0",
   "description": "Brain-like layered long-term memory for DeepSeek Harness that doubles as the context compaction engine",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

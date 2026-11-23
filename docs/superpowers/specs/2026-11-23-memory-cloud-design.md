@@ -217,7 +217,7 @@ test/                 # 单元 + 基于伪造 ctx 的集成测试
 - "压缩时自动填入"与"作为自动压缩手段"两者都做：能接管引擎时走引擎模式，否则走辅助模式；默认 `compactionMode: auto`。
 - 引擎模式不重写选区/锁/提交逻辑，只继承宿主引擎；宿主 API 变化时首先失效的是引擎模式，自动退回辅助模式。
 - 目标 DSH `>=0.2.2-rc.5 <0.3.0-0`、Node ≥24；TypeScript + tsdown；零原生依赖；测试框架用 vitest（阶段 1 若发现生态惯例不同再调整）。
-- 包名 `dsh-memory-cloud-brain`（`dsh-memory-cloud` 已被一个 3D 可视化插件占用），MIT 许可（不复用 AGPL / PolyForm 项目的代码）。
+- 包名 `dsh-memory-cloud-brain`（`dsh-memory-cloud` 已被一个 3D 可视化插件占用），许可证为 GPLv3（`GPL-3.0-only`；最初拟定为 MIT，后改为 GPLv3）。不复制其他项目的代码，尤其是 AGPL / PolyForm 等许可证的项目。
 - 默认存储根 `$DSH_HOME/memory-cloud`，默认单一 owner 作用域，群聊/访客会话隔离。
 - 原文默认全量保存（含工具调用），reasoning 可选排除；脱敏默认关闭，可开启。
 - 默认档位 3（128K 工作记忆上限）；空闲封口 30 分钟；半衰期 14 天；这些都是初值。

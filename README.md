@@ -534,4 +534,4 @@ node scripts/e2e/run-e2e.mjs --only s1,s2 --skip-build --dsh-dir /path/with/node
 
 ## 许可
 
-[MIT](LICENSE)
+本项目以 [GNU 通用公共许可证第 3 版（GPLv3）](LICENSE) 发布（SPDX：`GPL-3.0-only`）。
