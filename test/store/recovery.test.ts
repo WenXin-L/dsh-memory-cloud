@@ -185,6 +185,41 @@ describe('index recovery', () => {
     expect(next.id.endsWith('_7')).toBe(true)
   })
 
+  it.each(['rebuilt', 'reconciled'])('ends an episode %s without meta.json where the next one of its session starts, under its real session id', async mode => {
+    const { root, clock, store, scopeDir, indexPath } = await setup()
+    const sessionId = 'session-1a2b3c4d-full-id'
+    const first = await store.openEpisode(OWNER_SCOPE, { sessionId, startedAt: BASE_TIME, firstSeq: 1 })
+    await store.appendRaw(OWNER_SCOPE, first.id, records(1, 7))
+    await store.sealEpisode(OWNER_SCOPE, first.id, { reason: 'size', endedAt: BASE_TIME + 5000, lastSeq: 5, rawTokens: 50 })
+    const second = await store.openEpisode(OWNER_SCOPE, { sessionId, startedAt: BASE_TIME + 6000, firstSeq: 6 })
+    await store.appendRaw(OWNER_SCOPE, second.id, records(6, 7))
+    await rm(join(scopeDir, first.dir, 'meta.json'))
+    if (mode === 'rebuilt') {
+      await rm(indexPath)
+    } else {
+      const index = JSON.parse(await readFile(indexPath, 'utf8')) as { episodes: { id: string }[] }
+      await writeFile(indexPath, JSON.stringify({ ...index, episodes: index.episodes.filter(meta => meta.id !== first.id) }))
+    }
+
+    const fresh = makeStore(root, clock)
+    const recovered = (await fresh.readIndex(OWNER_SCOPE)).episodes.find(meta => meta.id === first.id)
+    expect(recovered).toMatchObject({ sessionId, status: 'sealed', seqRange: { first: 1, last: 5 }, endedAt: rawRecord(5).time })
+    expect((await fresh.readRaw(OWNER_SCOPE, first.id, { offset: 0, limit: 100 })).records.map(record => record.seq)).toEqual([1, 2, 3, 4, 5])
+    expect(JSON.parse(await readFile(join(scopeDir, first.dir, 'meta.json'), 'utf8'))).toMatchObject({ sessionId, seqRange: { first: 1, last: 5 } })
+  })
+
+  it('takes the session id of an episode without meta.json from the capture watermarks', async () => {
+    const { root, clock, store, scopeDir, indexPath } = await setup()
+    const sessionId = 'session-5e6f7a8b-full-id'
+    const only = await store.openEpisode(OWNER_SCOPE, { sessionId, startedAt: BASE_TIME, firstSeq: 1 })
+    await store.appendRaw(OWNER_SCOPE, only.id, records(1, 3))
+    await store.updateState(state => ({ ...state, lastSeq: { [sessionId]: 3, 'session-5e6f7a8c-other': 9 } }))
+    await rm(join(scopeDir, only.dir, 'meta.json'))
+    await rm(indexPath)
+    const [recovered] = (await makeStore(root, clock).readIndex(OWNER_SCOPE)).episodes
+    expect(recovered).toMatchObject({ id: only.id, sessionId, seqRange: { first: 1, last: 3 } })
+  })
+
   it('rebuildIndex keeps the previous file', async () => {
     const { clock, store, scopeDir } = await setup()
     await populate(store)

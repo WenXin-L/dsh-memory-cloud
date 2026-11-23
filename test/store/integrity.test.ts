@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { RollupEntry } from '../../src/contracts.ts'
 import { OWNER_SCOPE } from '../../src/contracts.ts'
-import { currentOwner, episodeOwner, isEpisodeNotOpenError, ownerState } from '../../src/store/index.ts'
+import { currentOwner, episodeOwner, isEpisodeNotOpenError, ownerState, processStartTime } from '../../src/store/index.ts'
 import { BASE_TIME, fakeClock, listTree, makeStore, provenance, rawRecord, records, summaryResult, useTempRoots } from './helpers.ts'
 
 const newRoot = useTempRoots()
@@ -35,6 +35,29 @@ describe('episode ownership', () => {
     expect(ownerState({ pid: process.ppid, startedAt: now }, self, boot)).toBe('alive')
     expect(ownerState({ pid: process.ppid, startedAt: boot - 60_000 }, self, boot)).toBe('dead')
     expect(ownerState({ pid: exitedPid(), startedAt: now }, self, boot)).toBe('dead')
+  })
+
+  it('treats a live PID whose process started well after the owner as reused', () => {
+    const self = currentOwner()
+    const now = Date.now()
+    const boot = now - 86_400_000
+    const owner = { pid: process.ppid, startedAt: now - 3_600_000 }
+    expect(ownerState(owner, self, boot, () => now)).toBe('dead')
+    expect(ownerState(owner, self, boot, () => owner.startedAt + 60_000)).toBe('alive')
+    expect(ownerState(owner, self, boot, () => owner.startedAt - 1000)).toBe('alive')
+    expect(ownerState(owner, self, boot, () => undefined)).toBe('alive')
+  })
+
+  it.skipIf(process.platform === 'win32')('reads real process start times with ps', () => {
+    const started = processStartTime(process.pid)
+    expect(started).toBeDefined()
+    expect(Math.abs(started! - performance.timeOrigin)).toBeLessThan(5000)
+    expect(processStartTime(exitedPid())).toBeUndefined()
+
+    const parentStarted = processStartTime(process.ppid)!
+    const boot = parentStarted - 86_400_000
+    expect(ownerState({ pid: process.ppid, startedAt: parentStarted - 1_800_000 }, currentOwner(), boot)).toBe('dead')
+    expect(ownerState({ pid: process.ppid, startedAt: parentStarted }, currentOwner(), boot)).toBe('alive')
   })
 })
 

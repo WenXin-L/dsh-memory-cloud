@@ -1,10 +1,11 @@
+import { spawnSync } from 'node:child_process'
 import { uptime } from 'node:os'
 import type { EpisodeMeta, Millis } from '../contracts.ts'
 
-/** The process that opened an episode, recorded as `owner` in its index entry while it is open. */
+/** The process that opened or adopted an episode, recorded as `owner` in its index entry while it is open. */
 export interface EpisodeOwner {
   readonly pid: number
-  /** Process start time (epoch ms), so a reused PID is not mistaken for the owner. */
+  /** Process start time (epoch ms), so a reused PID is not mistaken for the owner (see {@link ownerState}). */
   readonly startedAt: Millis
 }
 
@@ -29,6 +30,15 @@ export function isEpisodeNotOpenError(error: unknown): error is EpisodeNotOpenEr
 
 const START_TOLERANCE_MS = 1
 const BOOT_SLACK_MS = 2000
+/**
+ * How much later than the recorded owner the process now holding its PID may
+ * have started and still count as the owner. Generous, because a wrong `dead`
+ * lets another process seal a live episode, while a PID is practically never
+ * reused this soon.
+ */
+const PID_REUSE_SLACK_MS = 5 * 60_000
+const PS_TIMEOUT_MS = 2000
+const ELAPSED = /^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/
 
 export function currentOwner(): EpisodeOwner {
   return { pid: process.pid, startedAt: Math.round(performance.timeOrigin) }
@@ -58,14 +68,44 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 /**
- * `self` for this process, `alive` for another process that still runs, and
- * `dead` when the PID has exited, belongs to an earlier boot, or is this
- * process's PID reused from an earlier process.
+ * Start time (epoch ms, to the second) of the running process `pid`, from its
+ * elapsed time in `ps -o etime=` (macOS, Linux, BSD); undefined when `ps` is
+ * unavailable, fails, or knows no such process.
  */
-export function ownerState(owner: EpisodeOwner, self: EpisodeOwner = currentOwner(), bootTime: Millis = systemBootTime()): EpisodeOwnerState {
+export function processStartTime(pid: number): Millis | undefined {
+  if (process.platform === 'win32' || !Number.isSafeInteger(pid) || pid <= 0) return undefined
+  try {
+    const result = spawnSync('ps', ['-o', 'etime=', '-p', String(pid)], { encoding: 'utf8', timeout: PS_TIMEOUT_MS })
+    const now = Date.now()
+    if (result.status !== 0 || typeof result.stdout !== 'string') return undefined
+    const match = ELAPSED.exec(result.stdout.trim())
+    if (match === null) return undefined
+    const [, days = '0', hours = '0', minutes = '0', seconds = '0'] = match
+    return now - (((Number(days) * 24 + Number(hours)) * 60 + Number(minutes)) * 60 + Number(seconds)) * 1000
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * `self` for this process, `alive` for another process that still runs, and
+ * `dead` when the PID has exited, belongs to an earlier boot, is this
+ * process's PID reused from an earlier process, or is held by a process that
+ * started more than {@link PID_REUSE_SLACK_MS} after the owner (a reused PID).
+ * The last check is best effort: where `startTimeOf` cannot tell (no `ps`, as
+ * on Windows), a live PID counts as the owner.
+ */
+export function ownerState(
+  owner: EpisodeOwner,
+  self: EpisodeOwner = currentOwner(),
+  bootTime: Millis = systemBootTime(),
+  startTimeOf: (pid: number) => Millis | undefined = processStartTime,
+): EpisodeOwnerState {
   if (owner.pid === self.pid) return Math.abs(owner.startedAt - self.startedAt) <= START_TOLERANCE_MS ? 'self' : 'dead'
   if (owner.startedAt < bootTime - BOOT_SLACK_MS) return 'dead'
-  return isProcessAlive(owner.pid) ? 'alive' : 'dead'
+  if (!isProcessAlive(owner.pid)) return 'dead'
+  const started = startTimeOf(owner.pid)
+  return started !== undefined && started - owner.startedAt > PID_REUSE_SLACK_MS ? 'dead' : 'alive'
 }
 
 /** An open episode whose recorded owner is another process that is still running. */

@@ -6,7 +6,8 @@ type Fields = Readonly<Record<string, unknown>>
 
 const DELIMITER = '---'
 const KEY = /^[A-Za-z_][\w-]*$/
-const FIELD = /^([A-Za-z_][\w-]*):(?:[ \t]+(.*))?$/
+const FIELD = /^([A-Za-z_][\w-]*):(?:[ \t]+(.*))?$/s
+const LINE_SEPARATORS = /[\u2028\u2029]/g
 const PLAIN = /^[\p{L}\p{N}_][\p{L}\p{N}_.:/@+-]*$/u
 const RESERVED = /^(?:true|false|null|yes|no|on|off|y|n)$/i
 const NUMBER_LIKE = /^[-+]?(?:[\d_]+(?:\.[\d_]*)?(?:e[-+]?\d+)?|0x[\da-f_]+|0o[0-7_]+|0b[01_]+|[\d_]+(?::[0-5]?\d)+(?:\.[\d_]*)?)$/i
@@ -57,7 +58,7 @@ function renderValue(value: unknown): string {
   if (typeof value === 'string' && isPlain(value)) return value
   const rendered = JSON.stringify(value)
   if (rendered === undefined) throw new TypeError('memory store: frontmatter value is not serializable')
-  return rendered
+  return rendered.replace(LINE_SEPARATORS, separator => `\\u${separator.charCodeAt(0).toString(16)}`)
 }
 
 function parseScalar(raw: string): unknown {
@@ -80,7 +81,8 @@ function parseScalar(raw: string): unknown {
 /**
  * Render a YAML-compatible frontmatter block followed by `body`. Strings stay
  * plain when unambiguous and are otherwise JSON-quoted; arrays and objects use
- * JSON flow style, which YAML also reads. A trailing newline is always added
+ * JSON flow style, which YAML also reads. U+2028 and U+2029 are escaped, so
+ * every value stays on its own line. A trailing newline is always added
  * and removed again by {@link splitFrontmatter}, so bodies round-trip exactly.
  */
 export function renderFrontmatter(fields: Fields, body: string): string {

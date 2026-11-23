@@ -46,6 +46,7 @@ import {
   isValidScopeId,
   parseEpisodeId,
   safeFileStem,
+  sessionTag,
 } from './layout.ts'
 import { serialize, withPathLock } from './lock.ts'
 import {
@@ -60,7 +61,7 @@ import {
   isStringArray,
 } from './validate.ts'
 import type { EpisodeOwner } from './owner.ts'
-import { currentOwner, EpisodeNotOpenError } from './owner.ts'
+import { currentOwner, episodeOwner, EpisodeNotOpenError } from './owner.ts'
 
 export interface FileMemoryStoreOptions {
   /** Storage root; created on first write. */
@@ -83,6 +84,13 @@ export interface FileMemoryStore extends MemoryStore {
   readTierDocument(scope: ScopeId, episode: EpisodeId, tier: Tier): Promise<TierDocument | undefined>
   /** Rebuild `index.json` from the episode and rollup directories, keeping the old file as `index.json.prev-<ts>`. */
   rebuildIndex(scope: ScopeId): Promise<MemoryIndex>
+  /**
+   * Record this store's owner on an open episode it takes over (capture
+   * adopting it after a restart), so other processes no longer see the
+   * previous, possibly dead, owner. Returns the current entry, unchanged when
+   * the episode is no longer open.
+   */
+  claimEpisode(scope: ScopeId, episode: EpisodeId): Promise<EpisodeMeta>
 }
 
 interface CachedIndex {
@@ -118,6 +126,8 @@ interface RecoveredEpisode {
   readonly meta: EpisodeMeta
   /** Built from raw/tier files because `meta.json` was missing or unusable. */
   readonly derived: boolean
+  /** Derived without tier frontmatter: its session id is only the tag in its id, and its last seq the highest raw seq. */
+  readonly inferred: boolean
 }
 
 const INDEX_FILE = 'index.json'
@@ -266,7 +276,7 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
     }
   }
 
-  async function deriveEpisode(scope: ScopeId, id: string): Promise<EpisodeMeta> {
+  async function deriveEpisode(scope: ScopeId, id: string): Promise<RecoveredEpisode> {
     const dir = episodeDir(scope, id)
     const parsed = assertEpisodeId(id)
     const records = await readRawRecords(join(dir, RAW_FILE))
@@ -284,7 +294,7 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
       ...summary === undefined ? {} : { summary: summary.frontmatter?.tokens ?? estimator.estimate(summary.body) },
       ...gist === undefined ? {} : { gist: gist.frontmatter?.tokens ?? estimator.estimate(gist.body) },
     }
-    return {
+    const meta: EpisodeMeta = {
       id: id as EpisodeId,
       scope,
       sessionId: front?.sessionId ?? parsed.sessionTag,
@@ -303,6 +313,7 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
         ? { summarizer: { provider: front.provider, model: front.model, promptVersion: front.promptVersion, summarizedAt: front.summarizedAt } }
         : {},
     }
+    return { meta, derived: true, inferred: front === undefined }
   }
 
   async function recoverEpisodes(scope: ScopeId, ids: readonly string[]): Promise<RecoveredEpisode[]> {
@@ -310,12 +321,55 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
     for (const id of ids) {
       try {
         const sidecar = await readSidecar(scope, id)
-        recovered.push(sidecar === undefined ? { meta: await deriveEpisode(scope, id), derived: true } : { meta: sidecar, derived: false })
+        recovered.push(sidecar === undefined ? await deriveEpisode(scope, id) : { meta: sidecar, derived: false, inferred: false })
       } catch (error) {
         warn(`memory store: could not recover episode ${id} in scope ${scope}`, error)
       }
     }
     return recovered
+  }
+
+  /**
+   * Complete episodes derived from `raw.jsonl` alone: take the session id that
+   * a sibling episode or capture watermark with the same session tag names
+   * (when exactly one does), and end each where the next episode of its
+   * session starts, as {@link closeSuperseded} does for open sidecars, since a
+   * split leaves the retained tail in both files.
+   */
+  async function settleInferred(scope: ScopeId, recovered: readonly RecoveredEpisode[], known: readonly EpisodeMeta[]): Promise<RecoveredEpisode[]> {
+    if (!recovered.some(entry => entry.inferred)) return [...recovered]
+    const all = [...known, ...recovered.map(entry => entry.meta)]
+    const sessionIds = new Set([...known, ...recovered.filter(entry => !entry.inferred).map(entry => entry.meta)].map(meta => meta.sessionId))
+    const state = await readStateFile().catch(() => undefined)
+    if (state?.kind === 'ok') for (const sessionId of Object.keys(state.state.lastSeq)) sessionIds.add(sessionId)
+    const settled: RecoveredEpisode[] = []
+    for (const entry of recovered) {
+      settled.push(entry.inferred ? { ...entry, meta: await settleEpisode(scope, entry.meta, all, sessionIds) } : entry)
+    }
+    return settled
+  }
+
+  async function settleEpisode(scope: ScopeId, meta: EpisodeMeta, all: readonly EpisodeMeta[], sessionIds: ReadonlySet<string>): Promise<EpisodeMeta> {
+    const tag = episodeTag(meta.id)
+    const [only, ...others] = [...sessionIds].filter(sessionId => sessionTag(sessionId) === tag)
+    const sessionId = only !== undefined && others.length === 0 ? only : meta.sessionId
+    let next: EpisodeMeta | undefined
+    for (const other of all) {
+      if (episodeTag(other.id) !== tag || episodeNumber(other.id) <= episodeNumber(meta.id)) continue
+      if (next === undefined || episodeNumber(other.id) < episodeNumber(next.id)) next = other
+    }
+    const { first, last } = meta.seqRange
+    const cap = next === undefined ? last : Math.min(last, next.seqRange.first - 1)
+    if (cap === last || cap < first) return sessionId === meta.sessionId ? meta : { ...meta, sessionId }
+    const inRange = (await readRawRecords(rawPath(scope, meta.id))).filter(record => record.seq >= first && record.seq <= cap)
+    const endedAt = inRange.at(-1)?.time ?? meta.endedAt
+    return {
+      ...meta,
+      sessionId,
+      seqRange: { first, last: cap },
+      ...endedAt === undefined ? {} : { endedAt },
+      tokens: { ...meta.tokens, raw: estimator.estimate(inRange.map(record => JSON.stringify(record)).join('\n')) },
+    }
   }
 
   async function scanEpisodeIds(scope: ScopeId): Promise<string[]> {
@@ -383,7 +437,7 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
   }
 
   async function rebuildFromDirs(scope: ScopeId): Promise<{ index: MemoryIndex; derived: EpisodeMeta[]; closed: EpisodeMeta[] }> {
-    const recovered = await recoverEpisodes(scope, await scanEpisodeIds(scope))
+    const recovered = await settleInferred(scope, await recoverEpisodes(scope, await scanEpisodeIds(scope)), [])
     const metas = recovered.map(entry => entry.meta)
     const closed: EpisodeMeta[] = []
     const episodes: EpisodeMeta[] = []
@@ -418,7 +472,7 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
     const missingIds = (await scanEpisodeIds(scope)).filter(id => !knownEpisodes.has(id))
     const missingRollups = (await scanRollups(scope)).filter(entry => !knownRollups.has(entry.id))
     if (missingIds.length === 0 && missingRollups.length === 0) return index
-    const recovered = await recoverEpisodes(scope, missingIds)
+    const recovered = await settleInferred(scope, await recoverEpisodes(scope, missingIds), index.episodes)
     const written = await writeIndex(scope, {
       ...index,
       episodes: [...index.episodes, ...recovered.map(entry => entry.meta)],
@@ -545,6 +599,15 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
       await mirrorMeta(scope, meta)
       const written = await writeIndex(scope, { ...index, episodes: [...index.episodes, meta], updatedAt: clock.now() })
       return written.episodes.at(-1) ?? meta
+    })
+  }
+
+  async function claimEpisode(scope: ScopeId, id: EpisodeId): Promise<EpisodeMeta> {
+    return mutateEpisode(scope, id, meta => {
+      const current = episodeOwner(meta)
+      if (meta.status !== 'open' || (current?.pid === owner.pid && current.startedAt === owner.startedAt)) return meta
+      const claimed: StoredEpisodeMeta = { ...meta, owner: { pid: owner.pid, startedAt: owner.startedAt } }
+      return claimed
     })
   }
 
@@ -873,11 +936,16 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
     updateState,
     withLock,
     rebuildIndex,
+    claimEpisode,
   }
 }
 
 function episodeNumber(id: string): number {
   return parseEpisodeId(id)?.n ?? 0
+}
+
+function episodeTag(id: string): string | undefined {
+  return parseEpisodeId(id)?.sessionTag
 }
 
 function clampCount(value: number): number {

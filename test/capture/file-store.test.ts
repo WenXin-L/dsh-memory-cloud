@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createCapture } from '../../src/capture/capture.ts'
 import { OWNER_SCOPE, type EpisodeMeta, type SessionDescriptor } from '../../src/contracts.ts'
-import { createFileMemoryStore, type EpisodeOwner, type FileMemoryStore } from '../../src/store/index.ts'
+import { createFileMemoryStore, episodeOwner, type EpisodeOwner, type FileMemoryStore } from '../../src/store/index.ts'
 import { EventStream, T0, range, seqs } from './fixtures.ts'
 
 const session: SessionDescriptor = { sessionId: 'session-ffff-2222' }
@@ -97,6 +97,27 @@ describe('capture on the file store', () => {
     expect(meta).toMatchObject({ status: 'sealed', sealReason: 'idle', seqRange: { first: 0, last: 5 }, tokens: { raw: 'left'.length + 'open'.length } })
     expect(second.sealed.map(sealed => sealed.id)).toEqual([meta?.id])
     expect(second.warnings).toEqual([])
+  })
+
+  it('records the adopting process as owner, so another process does not seal the adopted episode as stale', async () => {
+    const s = new EventStream()
+    const crashed = start(openStore({ pid: spawnSync(process.execPath, ['-e', '']).pid!, startedAt: Date.now() }))
+    for (const record of [...s.fullTurn('one', 'uno'), s.turnStart(), s.user('two')]) crashed.capture.handleEvent(session, record)
+    await crashed.capture.dispose()
+
+    const adopting: EpisodeOwner = { pid: process.ppid, startedAt: Date.now() }
+    const resumed = start(openStore(adopting))
+    for (const record of [s.stepStart(), s.assistant('dos', { toolCall: 'shell' })]) resumed.capture.handleEvent(session, record)
+    await resumed.capture.settle()
+    const [adopted] = (await openStore().readIndex(OWNER_SCOPE)).episodes
+    expect(episodeOwner(adopted!)).toEqual(adopting)
+
+    const sweeper = start(openStore())
+    await sweeper.capture.sealStale(Number.MAX_SAFE_INTEGER, 0)
+    expect((await openStore().readIndex(OWNER_SCOPE)).episodes.map(meta => meta.status)).toEqual(['open'])
+    expect(sweeper.sealed).toEqual([])
+    await resumed.capture.dispose()
+    expect(await rawSeqs(openStore(), adopted!)).toEqual(range(0, 9))
   })
 
   it('leaves episodes opened by a live foreign process alone in sealStale, but seals those of exited ones', async () => {

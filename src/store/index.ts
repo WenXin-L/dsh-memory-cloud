@@ -40,6 +40,7 @@ export {
   isEpisodeNotOpenError,
   isOwnedByLiveForeignProcess,
   ownerState,
+  processStartTime,
   systemBootTime,
 } from './owner.ts'
 export type { EpisodeOwner, EpisodeOwnerState } from './owner.ts'

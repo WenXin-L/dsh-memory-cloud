@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import { mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -16,6 +16,12 @@ function episodeNumbers(ids: readonly string[]): number[] {
 
 function range(count: number): number[] {
   return Array.from({ length: count }, (_, offset) => offset + 1)
+}
+
+function exitedPid(): number {
+  const child = spawnSync(process.execPath, ['-e', ''])
+  if (child.pid === undefined) throw new Error('could not spawn a child process')
+  return child.pid
 }
 
 describe('locking', () => {
@@ -114,6 +120,43 @@ describe('locking', () => {
     await utimes(lock, written, written)
     expect(await clearPartialLock(lock, Date.now(), written.getTime() - 1000)).toBe(false)
     expect(await clearPartialLock(lock, Date.now(), written.getTime() + 1000)).toBe(true)
+    expect((await listTree(root)).filter(file => file.includes('.lock'))).toEqual([])
+  })
+
+  it('leaves a pre-boot lock of an exited PID to the host takeover, which still acquires it', async () => {
+    const root = await newRoot()
+    const store = makeStore(root, fakeClock(), { lockWaitMs: 2000 })
+    const lock = join(root, 'state.json.lock')
+    await mkdir(root, { recursive: true })
+    await writeFile(lock, `${exitedPid()}\n`)
+    const written = new Date(Date.now() - STALE_PARTIAL_LOCK_MS - 60_000)
+    await utimes(lock, written, written)
+    expect(await clearPartialLock(lock, Date.now(), written.getTime() + 1000)).toBe(false)
+    expect(await readFile(lock, 'utf8')).toMatch(/^\d+\n$/)
+
+    await store.updateState(state => ({ ...state, lastSeq: { taken: 1 } }))
+    expect((await store.readState()).lastSeq).toEqual({ taken: 1 })
+    expect((await listTree(root)).filter(file => file.includes('.lock'))).toEqual([])
+  })
+
+  it('removes a lock naming this process that predates it, since the host never takes over its own PID', async () => {
+    const root = await newRoot()
+    const store = makeStore(root, fakeClock(), { lockWaitMs: 150 })
+    const lock = join(root, 'state.json.lock')
+    await mkdir(root, { recursive: true })
+    await writeFile(lock, `${process.pid}\n`)
+    const boot = performance.timeOrigin - 3_600_000
+    expect(await clearPartialLock(lock, Date.now() + STALE_PARTIAL_LOCK_MS + 1000, boot)).toBe(false)
+    expect(await readFile(lock, 'utf8')).toBe(`${process.pid}\n`)
+
+    const before = new Date(performance.timeOrigin - 60_000)
+    await utimes(lock, before, before)
+    expect(await clearPartialLock(lock, Date.now(), boot)).toBe(true)
+
+    await writeFile(lock, `${process.pid}\n`)
+    await utimes(lock, before, before)
+    await store.updateState(state => ({ ...state, lastSeq: { recovered: 1 } }))
+    expect((await store.readState()).lastSeq).toEqual({ recovered: 1 })
     expect((await listTree(root)).filter(file => file.includes('.lock'))).toEqual([])
   })
 

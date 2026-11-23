@@ -11,10 +11,11 @@ import type {
   SessionDescriptor,
   TokenEstimator,
 } from '../contracts.ts'
+import type { FileMemoryStore } from '../store/file-store.ts'
 import { isEpisodeNotOpenError, isOwnedByLiveForeignProcess } from '../store/owner.ts'
 import { isExcludedRecord, isMessageRecord, isSyntheticRecord, readShadowedSeqs, recordText, stripReasoning } from './records.ts'
 
-export type CaptureStore = Pick<MemoryStore, 'listScopes' | 'readIndex' | 'openEpisode' | 'appendRaw' | 'sealEpisode' | 'readRaw' | 'readState' | 'updateState'>
+export type CaptureStore = Pick<MemoryStore, 'listScopes' | 'readIndex' | 'openEpisode' | 'appendRaw' | 'sealEpisode' | 'readRaw' | 'readState' | 'updateState'> & Pick<FileMemoryStore, 'claimEpisode'>
 
 /**
  * Read on every use, so an object with getters over volatile config values
@@ -54,7 +55,12 @@ export interface Capture {
   handleEvent(session: SessionDescriptor, event: RawEventRecord): void
   /** Write the session's buffered records now (coalesced with an already queued write). */
   flushSession(sessionId: string): Promise<void>
-  /** Seal open episodes of sessions idle for at least `idleMinutes`, skipping sessions inside a turn. */
+  /**
+   * Seal open episodes of sessions idle for at least `idleMinutes`, skipping
+   * sessions inside a turn, and retry failed end seals. At most every five
+   * minutes it also runs {@link sealStale}, so episodes a crashed process left
+   * open are sealed once they are old enough, not only at startup.
+   */
   sealIdle(now?: Millis): Promise<void>
   /** Seal the session's open episode; `'end'` also forgets the session (use on `session/disposed`). */
   sealSession(sessionId: string, reason?: Exclude<SealReason, 'compaction' | 'size'>): Promise<void>
@@ -68,7 +74,8 @@ export interface Capture {
    * Seal `open` episodes in the store that no live session of this process
    * owns, whose recorded owner process is not still running, and whose last
    * record is older than `olderThanMs` (default `idleMinutes`). Recovers
-   * episodes left open by a crash or an unload.
+   * episodes left open by a crash or an unload. Call it at startup;
+   * `sealIdle` repeats it. Overlapping calls share one sweep.
    */
   sealStale(now?: Millis, olderThanMs?: number): Promise<void>
   /** Write every session's buffered records and wait for all queued work, including pending `onSealed` callbacks. */
@@ -119,6 +126,7 @@ interface SessionState {
 const DEFAULT_FLUSH_DELAY_MS = 2000
 const RAW_PAGE_SIZE = 500
 const SEAL_ATTEMPTS = 2
+const STALE_SWEEP_INTERVAL_MS = 5 * 60_000
 
 function sum(values: readonly number[]): number {
   let total = 0
@@ -154,7 +162,10 @@ export function createCapture(deps: CaptureDeps): Capture {
   const stranded = new Set<SessionState>()
   /** Pending `onSealed` work (store writes such as queueing a summary), awaited like queued capture work. */
   const callbacks = new Set<Promise<void>>()
+  /** Whether a session was inside a turn when a rescope retired it, for the state that replaces it. */
+  const carriedTurns = new Map<string, boolean>()
   let sweeping: Promise<void> | undefined
+  let lastSweep: Millis | undefined
   let disposed = false
 
   function warn(message: string, error?: unknown): void {
@@ -434,6 +445,48 @@ export function createCapture(deps: CaptureDeps): Capture {
       warn(`failed to read capture watermark for session ${state.sessionId}`, error)
     }
     if (sweeping !== undefined) await sweeping
+    await takeOverStranded(state)
+    await adopt(state)
+    const carried = carriedTurns.get(state.sessionId)
+    if (carried !== undefined) {
+      carriedTurns.delete(state.sessionId)
+      state.turnOpen = carried
+    }
+  }
+
+  /**
+   * A forgotten state of this session in the same scope whose final seal
+   * failed still holds the open episode with records it has not written yet.
+   * Continue from it rather than adopting the stored part of that episode, so
+   * its pending seals run here and none of its records are dropped.
+   */
+  async function takeOverStranded(state: SessionState): Promise<void> {
+    for (const previous of [...stranded]) {
+      if (previous.sessionId !== state.sessionId || !sameScope(previous.decision, state.decision)) continue
+      stranded.delete(previous)
+      await previous.queue
+      if (previous.episode === undefined) continue
+      state.episode = previous.episode
+      state.seals.push(...previous.seals.splice(0))
+      state.lastSeq = Math.max(state.lastSeq, previous.lastSeq)
+      state.lastActivity = previous.lastActivity
+      previous.episode = undefined
+      return
+    }
+  }
+
+  /** Record this process as the owner of an adopted episode; on failure the previous owner stays recorded. */
+  async function claim(scope: ScopeId, meta: EpisodeMeta): Promise<EpisodeMeta> {
+    try {
+      return await store.claimEpisode(scope, meta.id)
+    } catch (error) {
+      warn(`failed to claim episode ${meta.id}`, error)
+      return meta
+    }
+  }
+
+  /** Adopt the session's open episode in its scope (left by an earlier process) and skip seqs its sealed episodes cover. */
+  async function adopt(state: SessionState): Promise<void> {
     const decision = state.decision
     if (decision === undefined) return
     try {
@@ -444,7 +497,12 @@ export function createCapture(deps: CaptureDeps): Capture {
         if (meta.status !== 'open') state.lastSeq = Math.max(state.lastSeq, meta.seqRange.last)
         else if (latest === undefined || meta.seqRange.first > latest.seqRange.first) latest = meta
       }
-      if (latest === undefined) return
+      if (latest === undefined || state.episode !== undefined) return
+      const claimed = await claim(decision.scope, latest)
+      if (claimed.status !== 'open') {
+        state.lastSeq = Math.max(state.lastSeq, claimed.seqRange.last)
+        return
+      }
       const records = await readAllRaw(decision.scope, latest.id)
       state.episode = createEpisode(decision.scope, records, undefined, latest.id)
       const last = records.at(-1)
@@ -526,12 +584,18 @@ export function createCapture(deps: CaptureDeps): Capture {
     return resolved.ok && !sameScope(state.decision, resolved.decision)
   }
 
-  /** Forget the session, then flush and seal its episode; a failed seal leaves it stranded for a later retry. */
-  async function retire(state: SessionState, reason: SealReason): Promise<void> {
+  /**
+   * Forget the session, then flush and seal its episode; a failed seal leaves
+   * it stranded for a later retry. With `carryTurn` (a rescope, not the end of
+   * the session) the state that replaces it learns whether a turn is open.
+   */
+  async function retire(state: SessionState, reason: SealReason, carryTurn: boolean): Promise<void> {
     const { sessionId } = state
     if (sessions.get(sessionId) === state) sessions.delete(sessionId)
     const done = enqueue(state, `${reason} seal`, async () => {
       clearTimer(state)
+      if (carryTurn && state.decision !== undefined) carriedTurns.set(sessionId, state.turnOpen)
+      else carriedTurns.delete(sessionId)
       if (state.decision === undefined) return
       if (await sealAll(state, reason)) {
         stranded.delete(state)
@@ -602,13 +666,26 @@ export function createCapture(deps: CaptureDeps): Capture {
     }
   }
 
+  function sealStale(now: Millis, olderThanMs: number): Promise<void> {
+    if (disposed) return Promise.resolve()
+    if (sweeping !== undefined) return sweeping
+    lastSweep = now
+    const running = sweep(now, olderThanMs)
+      .catch((error: unknown) => warn('stale episode sweep failed', error))
+      .finally(() => {
+        if (sweeping === running) sweeping = undefined
+      })
+    sweeping = running
+    return running
+  }
+
   return {
     handleEvent(session, event) {
       try {
         if (disposed || session.origin === 'subagent') return
         let state = sessions.get(session.sessionId)
         if (state !== undefined && (session !== state.descriptor || event.type === 'turn/start') && scopeChanged(state, session)) {
-          void retire(state, 'end')
+          void retire(state, 'end', true)
           state = undefined
         }
         const target = state ?? createState(session)
@@ -629,6 +706,7 @@ export function createCapture(deps: CaptureDeps): Capture {
       if (disposed) return
       const thresholdMs = options.idleMinutes * 60_000
       const tasks: Promise<void>[] = retryStranded()
+      if (lastSweep === undefined || now - lastSweep >= STALE_SWEEP_INTERVAL_MS) tasks.push(sealStale(now, thresholdMs))
       for (const state of sessions.values()) {
         if (state.decision === undefined) continue
         tasks.push(enqueue(state, 'idle seal', async () => {
@@ -644,8 +722,14 @@ export function createCapture(deps: CaptureDeps): Capture {
 
     async sealSession(sessionId, reason = 'end') {
       const state = sessions.get(sessionId)
-      if (state === undefined) return
-      if (reason === 'end') return retire(state, 'end')
+      if (state === undefined) {
+        if (reason === 'end') {
+          await retiring.get(sessionId)
+          carriedTurns.delete(sessionId)
+        }
+        return
+      }
+      if (reason === 'end') return retire(state, 'end', false)
       return enqueue(state, `${reason} seal`, async () => {
         clearTimer(state)
         await sealAll(state, reason)
@@ -658,19 +742,11 @@ export function createCapture(deps: CaptureDeps): Capture {
         await retiring.get(sessionId)
         return
       }
-      await retire(state, 'end')
+      await retire(state, 'end', true)
     },
 
     sealStale(now = clock.now(), olderThanMs = options.idleMinutes * 60_000) {
-      if (disposed) return Promise.resolve()
-      if (sweeping !== undefined) return sweeping
-      const running = sweep(now, olderThanMs)
-        .catch((error: unknown) => warn('stale episode sweep failed', error))
-        .finally(() => {
-          if (sweeping === running) sweeping = undefined
-        })
-      sweeping = running
-      return running
+      return sealStale(now, olderThanMs)
     },
 
     async flush() {

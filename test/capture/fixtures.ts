@@ -14,6 +14,8 @@ export class FakeStore implements CaptureStore {
   state: StoreState = { version: 1, lastSeq: {}, queue: [] }
   failNext = new Map<string, number>()
   calls = 0
+  readonly methods: string[] = []
+  readonly claimed: EpisodeId[] = []
   private counter = 0
 
   private key(scope: ScopeId, id: EpisodeId): string {
@@ -28,6 +30,7 @@ export class FakeStore implements CaptureStore {
 
   private hit(method: string): void {
     this.calls++
+    this.methods.push(method)
     const failures = this.failNext.get(method) ?? 0
     if (failures > 0) {
       this.failNext.set(method, failures - 1)
@@ -93,6 +96,13 @@ export class FakeStore implements CaptureStore {
       tokens: { raw: seal.rawTokens },
       ...seal.shadowedSeqs === undefined ? {} : { shadowedSeqs: seal.shadowedSeqs },
     }
+    return episode.meta
+  }
+
+  async claimEpisode(scope: ScopeId, id: EpisodeId): Promise<EpisodeMeta> {
+    this.hit('claimEpisode')
+    const episode = this.get(scope, id)
+    if (episode.meta.status === 'open') this.claimed.push(id)
     return episode.meta
   }
 

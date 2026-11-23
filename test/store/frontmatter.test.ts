@@ -89,6 +89,25 @@ describe('tier frontmatter', () => {
     expect(parseTierFile(text).frontmatter).toEqual(gistFront)
   })
 
+  it('round-trips values containing U+2028 and U+2029 and escapes them on disk', () => {
+    const front: TierFrontmatter = {
+      ...summaryFront,
+      model: 'm\u2028x',
+      dates: [{ date: '2026-12-01', what: '去咖啡馆\u2028带伞' }],
+      ongoing: ['a\u2029b'],
+    }
+    const text = renderTierFile(front, 'body\u2028line')
+    expect(text.slice(0, text.lastIndexOf('---'))).not.toMatch(/[\u2028\u2029]/)
+    const document = parseTierFile(text)
+    expect(document.frontmatter).toEqual(front)
+    expect(document.body).toBe('body\u2028line')
+  })
+
+  it('reads hand-edited values with raw U+2028 and U+2029', () => {
+    const split = splitFrontmatter('---\nwhat: "a\u2028b"\nlist: ["c\u2029d"]\nplain: e\u2028f\n---\n')
+    expect(split?.fields).toEqual({ what: 'a\u2028b', list: ['c\u2029d'], plain: 'e\u2028f' })
+  })
+
   it('parses hand-written YAML scalars', () => {
     const split = splitFrontmatter('---\na: \'it\'\'s\'\nb: 12\nc: true\nd: ~\ne:\nf: plain text\n# comment\ng: [1, "x"]\n---\n')
     expect(split?.fields).toEqual({ a: 'it\'s', b: 12, c: true, d: null, e: null, f: 'plain text', g: [1, 'x'] })

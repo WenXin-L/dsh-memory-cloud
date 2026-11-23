@@ -168,7 +168,7 @@ describe('skipped sessions', () => {
     await capture.sealSession(child.sessionId, 'end')
     await capture.sealIdle(Number.MAX_SAFE_INTEGER)
     expect(resolveScope).not.toHaveBeenCalled()
-    expect(store.calls).toBe(0)
+    expect(store.methods).toEqual(['listScopes'])
     expect(sealed).toEqual([])
   })
 
@@ -181,7 +181,7 @@ describe('skipped sessions', () => {
     await capture.sealIdle(Number.MAX_SAFE_INTEGER)
     await capture.sealSession(session.sessionId, 'end')
     expect(resolveScope).toHaveBeenCalledTimes(2)
-    expect(store.calls).toBe(0)
+    expect(store.methods).toEqual(['listScopes'])
     expect(sealed).toEqual([])
   })
 
@@ -402,6 +402,7 @@ describe('restart', () => {
     await after.capture.settle()
     expect(store.list()).toHaveLength(1)
     expect(seqs(store.list()[0]?.raw ?? [])).toEqual(range(0, 11))
+    expect(store.claimed).toEqual([store.list()[0]?.meta.id])
 
     await after.capture.sealSession(session.sessionId, 'end')
     expect(store.list()[0]?.meta).toMatchObject({ status: 'sealed', seqRange: { first: 0, last: 11 }, tokens: { raw: textTokens('one', 'uno', 'two', 'dos') } })
@@ -475,6 +476,25 @@ describe('stale episodes', () => {
 
     await after.capture.sealStale(last + 30 * MINUTE)
     expect(store.list()[0]?.meta).toMatchObject({ status: 'sealed', sealReason: 'idle', seqRange: { first: 0, last: 5 }, endedAt: last, tokens: { raw: textTokens('left open', 'indeed') } })
+    expect(after.sealed).toHaveLength(1)
+  })
+
+  it('repeats the sweep from sealIdle at most every five minutes', async () => {
+    const store = new FakeStore()
+    const before = setup({}, { store })
+    const s = new EventStream()
+    const turn = s.fullTurn('left open', 'indeed')
+    before.feed(turn)
+    await before.capture.dispose()
+    const last = turn[5]?.time ?? 0
+
+    const after = setup({}, { store })
+    await after.capture.sealStale(last + 29 * MINUTE)
+    await after.capture.sealIdle(last + 31 * MINUTE)
+    expect(store.list()[0]?.meta.status).toBe('open')
+
+    await after.capture.sealIdle(last + 34 * MINUTE)
+    expect(store.list()[0]?.meta).toMatchObject({ status: 'sealed', sealReason: 'idle', seqRange: { first: 0, last: 5 }, endedAt: last })
     expect(after.sealed).toHaveLength(1)
   })
 
@@ -653,6 +673,31 @@ describe('transactional seals', () => {
     expect(store.list()[0]?.meta).toMatchObject({ status: 'sealed', sealReason: 'end', seqRange: { first: 0, last: 5 } })
     expect(sealed).toHaveLength(1)
   })
+
+  it('continues from a stranded end seal when the session comes back, so none of its unwritten records are lost', async () => {
+    const { store, capture, sealed, warnings, feed } = setup()
+    const s = new EventStream()
+    feed(s.fullTurn('one', 'uno'))
+    await capture.settle()
+    feed([s.turnStart(), s.user('two'), s.stepStart(), s.assistant('dos')])
+    await capture.settle()
+    store.failNext.set('appendRaw', 1)
+    await capture.sealSession(session.sessionId, 'end')
+    expect(store.list().map(episode => [episode.meta.status, seqs(episode.raw)])).toEqual([['open', range(0, 5)]])
+
+    feed(s.fullTurn('three', 'tres'))
+    await capture.settle()
+    await capture.sealSession(session.sessionId, 'end')
+    await capture.flush()
+    const episodes = store.list()
+    expect(episodes.map(episode => [episode.meta.status, episode.meta.sealReason, episode.meta.seqRange])).toEqual([
+      ['sealed', 'end', { first: 0, last: 9 }],
+      ['sealed', 'end', { first: 10, last: 15 }],
+    ])
+    expect(episodes.flatMap(episode => seqs(store.owned(episode)))).toEqual(range(0, 15))
+    expect(sealed.map(entry => entry.meta.seqRange)).toEqual([{ first: 0, last: 9 }, { first: 10, last: 15 }])
+    expect(warnings.some(message => message.includes('no longer open'))).toBe(false)
+  })
 })
 
 describe('foreign seals', () => {
@@ -753,6 +798,38 @@ describe('rescoping', () => {
     await capture.settle()
     expect(store.list(OWNER_SCOPE).map(episode => [episode.meta.status, episode.meta.seqRange])).toEqual([['sealed', { first: 0, last: 1 }]])
     expect(seqs(store.list(group)[0]?.raw ?? [])).toEqual(range(2, 5))
+  })
+
+  it('keeps a turn open across a mid-turn descriptor change, so idle sealing waits for the turn to end', async () => {
+    const { resolveScope } = switchable()
+    const { store, capture, feed } = setup({}, { resolveScope })
+    const s = new EventStream()
+    const tagged = { ...session, tags: ['group'] }
+    feed([s.turnStart(), s.user('build it'), s.stepStart(), s.assistant('running', { toolCall: 'shell' })])
+    feed([s.toolResult('ok'), s.stepEnd(), s.stepStart(), s.assistant('waiting for approval', { toolCall: 'deploy' })], tagged)
+    await capture.flush()
+    await capture.sealIdle(Number.MAX_SAFE_INTEGER)
+    expect(store.list(group).map(episode => episode.meta.status)).toEqual(['open'])
+
+    feed([s.toolResult('deployed'), s.stepEnd(), s.turnEnd()], tagged)
+    await capture.sealIdle(Number.MAX_SAFE_INTEGER)
+    expect(store.list(group).map(episode => [episode.meta.status, episode.meta.sealReason, episode.meta.seqRange])).toEqual([
+      ['sealed', 'idle', { first: 4, last: 10 }],
+    ])
+  })
+
+  it('keeps a turn open across rescope()', async () => {
+    const { current, resolveScope } = switchable()
+    const { store, capture, feed } = setup({}, { resolveScope })
+    const s = new EventStream()
+    feed([s.turnStart(), s.user('private'), s.stepStart()])
+    await capture.settle()
+    current.scope = group
+    await capture.rescope(session.sessionId)
+    feed([s.assistant('public', { toolCall: 'shell' })])
+    await capture.flush()
+    await capture.sealIdle(Number.MAX_SAFE_INTEGER)
+    expect(store.list(group).map(episode => episode.meta.status)).toEqual(['open'])
   })
 
   it('stops capturing once the rules disable capture for the session', async () => {
