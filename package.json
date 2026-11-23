@@ -1,8 +1,16 @@
 {
   "name": "dsh-memory-cloud-brain",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Brain-like layered long-term memory for DeepSeek Harness that doubles as the context compaction engine",
   "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WenXin-L/dsh-memory-cloud.git"
+  },
+  "homepage": "https://github.com/WenXin-L/dsh-memory-cloud#readme",
+  "bugs": {
+    "url": "https://github.com/WenXin-L/dsh-memory-cloud/issues"
+  },
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -21,7 +29,8 @@
     "cordis.patch.yml",
     "LICENSE",
     "README.md",
-    "README.en.md"
+    "README.en.md",
+    "CHANGELOG.md"
   ],
   "keywords": [
     "dsh-plugin",
