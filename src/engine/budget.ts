@@ -45,19 +45,28 @@ export function thresholdConfigFor(
   if (messageBudget < 4) return undefined
 
   const headroomTokens = Math.min(wholeOrZero(options.headroomTokens), Math.floor(messageBudget / 2))
-  const pressureBudget = messageBudget - headroomTokens
   const target = Math.min(window, Math.max(1, wholeOrZero(budget.thresholdTokens)))
   const thresholdRatio = Math.min(1, target / window)
-  const thresholdTokens = Math.floor(Math.min(window * thresholdRatio, pressureBudget))
+  const thresholdTokens = pressureThreshold(capacity, thresholdRatio, headroomTokens)
   if (thresholdTokens < 2) return undefined
 
-  const ceiling = Math.min(thresholdTokens - 1, Math.ceil(thresholdTokens * RETAIN_CEILING_SHARE) - 1)
-  const retainTokens = Math.max(0, Math.min(wholeOrZero(budget.retainTokens), ceiling))
+  const retainTokens = Math.max(0, Math.min(wholeOrZero(budget.retainTokens), retainCeiling(thresholdTokens)))
   const explicitMax = options.maxTokens
   const maxTokens = explicitMax !== undefined && Number.isInteger(explicitMax) && explicitMax > 0
     ? explicitMax
     : Math.max(1, headroomTokens)
   return { thresholdRatio, headroomTokens, retainTokens, maxTokens, thresholdTokens }
+}
+
+/** compaction-basic's pressure threshold for one routed model: `floor(min(W × ratio, W − O − headroom))`. */
+export function pressureThreshold(capacity: ModelCapacity, thresholdRatio: number, headroomTokens: number): number {
+  const window = capacity.contextWindow
+  return Math.floor(Math.min(window * thresholdRatio, window - capacity.reservedOutputTokens - headroomTokens))
+}
+
+/** The largest retained tail below both a threshold and {@link RETAIN_CEILING_SHARE} of it. */
+export function retainCeiling(thresholdTokens: number): number {
+  return Math.min(thresholdTokens - 1, Math.ceil(thresholdTokens * RETAIN_CEILING_SHARE) - 1)
 }
 
 /** Conversation size (everything after the system head) under both pricings. */

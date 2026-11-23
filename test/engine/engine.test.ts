@@ -1,8 +1,8 @@
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
-import type { ResolvedConfig } from '@deepseek-ai/dsh-compaction-basic'
-import { resolveTargetPolicy } from '@deepseek-ai/dsh-compaction-basic/src/config.ts'
+import type { ModelCompactPolicyConfig, ResolvedConfig, ResolvedTargetPolicy } from '@deepseek-ai/dsh-compaction-basic'
+import { resolveCompactSpec, resolveTargetPolicy } from '@deepseek-ai/dsh-compaction-basic/src/config.ts'
 import type { SummarizationInput, SummaryResult } from '@deepseek-ai/dsh-compaction-basic/src/summarizer.ts'
 import { createAssistantMessage, createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
@@ -24,6 +24,7 @@ import {
   MEMORY_CLOUD_SERVICE,
   MIN_CHECKPOINT_CHARS,
   priceConversation,
+  RETAIN_CEILING_SHARE,
   thresholdConfigFor,
   type EngineBudgetHints,
   type EngineCheckpointRequest,
@@ -57,7 +58,7 @@ function levelBudget(overrides: Partial<ResolvedBudget> = {}): ResolvedBudget {
 }
 
 interface HostOptions {
-  readonly enabled?: () => boolean
+  readonly enabled?: (agent?: Agent) => boolean
   readonly scope?: () => ScopeDecision
   readonly budget?: () => Promise<ResolvedBudget>
   readonly compose?: (request: EngineCheckpointRequest, signal?: AbortSignal) => Promise<string>
@@ -80,7 +81,7 @@ function fakeHost(options: HostOptions = {}) {
       },
     },
     scopeFor: () => options.scope?.() ?? OWNER,
-    isEnabled: () => options.enabled?.() ?? true,
+    isEnabled: agent => options.enabled?.(agent) ?? true,
     notifyFallback(reason) {
       fallbacks.push(reason)
       options.notify?.(reason)
@@ -113,7 +114,32 @@ function setup(options: SetupOptions = {}) {
   return { ctx, engine, resolveModelInfo }
 }
 
+/**
+ * A context for an engine with automatic listeners. `priced` records the policy
+ * the tracked engine's live config resolves for each metered header, so its
+ * last entry is the one compaction-basic's model-switch check priced.
+ */
+function switchContext(windows: Record<string, number>, totalTokens: number) {
+  const ctx = new Context()
+  const priced: ResolvedTargetPolicy[] = []
+  let engine: MemoryCompactionEngine | undefined
+  ctx.provide('llm', { resolveModelInfo: async (provider: string, model: string) => ({ provider, id: model, name: model, context: { contextWindow: windows[model]! } }) })
+  ctx.provide('tokenMeter', {
+    measure: (_session: Session, header?: { readonly config: { readonly provider: string; readonly model: string } }) => {
+      if (engine !== undefined && header !== undefined) priced.push(resolveTargetPolicy(engine.config, header.config))
+      return { totalTokens, surfaceTokens: totalTokens, baseline: 'estimated', nodes: [] }
+    },
+  })
+  ctx.provide('sessions', {})
+  const track = (value: MemoryCompactionEngine): MemoryCompactionEngine => {
+    engine = value
+    return value
+  }
+  return { ctx, priced, track }
+}
+
 interface ConversationOptions {
+  readonly id?: string
   readonly subagent?: boolean
   readonly turns?: number
   readonly size?: number
@@ -121,7 +147,7 @@ interface ConversationOptions {
 }
 
 function conversation(options: ConversationOptions = {}) {
-  const id = SessionId('sess-1')
+  const id = SessionId(options.id ?? 'sess-1')
   const session = Session.create(id, undefined, options.subagent === true
     ? { version: 4, id, createdAt: 1, isSeeded: false, origin: 'subagent', parentSession: SessionId('parent'), delegationDepth: 1 }
     : undefined)
@@ -350,6 +376,31 @@ describe('summarize', () => {
     await expect(summarize(engine, input, agent)).resolves.toBe(DEFAULT_RESULT)
   })
 
+  it('gives the default summary of an agent it cannot map the row policy, and every other hand-back the live mappings', async () => {
+    const configs: ResolvedConfig[] = []
+    vi.spyOn(BasicCompactionEngine.prototype as unknown as { summarize: Summarize }, 'summarize').mockImplementation(async function (this: BasicCompactionEngine) {
+      configs.push(this.config)
+      return DEFAULT_RESULT
+    })
+    vi.spyOn(BasicCompactionEngine.prototype, 'compactIfNeeded').mockResolvedValue(null)
+    const { host, fallbacks } = fakeHost({ compose: () => Promise.reject(new Error('llm failed')) })
+    const { engine } = setup({ host })
+    const owner = conversation({ id: 'owner' })
+    await engine.compactIfNeeded(owner.agent, 'pressure', live())
+    const mapped = engine.config
+    expect(mapped).not.toBe(engine.baseConfig)
+
+    const sub = conversation({ id: 'sub', subagent: true })
+    await expect(summarize(engine, sub.input, sub.agent)).resolves.toBe(DEFAULT_RESULT)
+    await expect(summarize(engine, owner.input, owner.agent)).resolves.toBe(DEFAULT_RESULT)
+
+    expect(configs).toHaveLength(2)
+    expect(configs[0]).toBe(engine.baseConfig)
+    expect(configs[1]).toBe(mapped)
+    expect(engine.config).toBe(mapped)
+    expect(fallbacks.map(reason => reason.kind)).toEqual(['subagent', 'compose-error'])
+  })
+
   it('omits regionSeqs when the region does not match the live surface', async () => {
     spyDefaultSummary()
     const { host, requests } = fakeHost()
@@ -485,16 +536,16 @@ describe('compactIfNeeded', () => {
     expect(resolveTargetPolicy(engine.config, { provider: 'fake', model: 'fake-1' }).retainTokens).toBeLessThan(heuristicSurface)
   })
 
-  it('maps thresholds per routed model, so a switch to a smaller model uses its own policy and is not refused', async () => {
-    const ctx = new Context()
-    const windows: Record<string, number> = { 'fake-1': WINDOW, 'small-1': 32 * K }
-    ctx.provide('llm', { resolveModelInfo: async (provider: string, model: string) => ({ provider, id: model, name: model, context: { contextWindow: windows[model]! } }) })
-    ctx.provide('tokenMeter', { measure: () => ({ totalTokens: 1000, surfaceTokens: 1000, baseline: 'estimated', nodes: [] }) })
-    ctx.provide('sessions', {})
+  it.each([
+    ['the default row', {}],
+    ['an explicit row headroom', { headroomTokens: 4096 }],
+  ] satisfies [string, MemoryEngineConfig][])('maps thresholds per routed model, so a switch to a smaller model uses its own policy and is not refused (%s)', async (_label, config) => {
+    const { ctx, priced, track } = switchContext({ 'fake-1': WINDOW, 'small-1': 32 * K }, 1000)
     const budget = levelBudget({ thresholdTokens: 112 * K, retainTokens: 100 * K, memoryBudgetTokens: 0 })
     const { host } = fakeHost({ budget: async () => budget })
     ctx.provide(MEMORY_CLOUD_SERVICE, host)
-    const engine = new MemoryCompactionEngine(ctx, { headroomTokens: 4096 })
+    const engine = track(new MemoryCompactionEngine(ctx, config))
+    const headroom = engine.headroomTokens
     const { session, agent } = conversation()
     const big = { provider: 'fake', model: 'fake-1' }
     const small = { provider: 'fake', model: 'small-1' }
@@ -502,21 +553,108 @@ describe('compactIfNeeded', () => {
     await engine.compactIfNeeded(agent, 'pressure', live())
     const bigPolicy = resolveTargetPolicy(engine.config, big)
     expect(bigPolicy.retainTokens).toBeGreaterThan(32 * K)
-    expect(engine.config).toMatchObject({ thresholdRatio: engine.baseConfig.thresholdRatio, headroomTokens: 4096, retainRatio: 0.16 })
+    expect(engine.config).toMatchObject({ thresholdRatio: engine.baseConfig.thresholdRatio, headroomTokens: engine.baseConfig.headroomTokens, retainRatio: 0.16 })
     expect(resolveTargetPolicy(engine.config, small)).toEqual(resolveTargetPolicy(engine.baseConfig, small))
 
     const header = session.requestHeader()!
     const next = { ...header.config, model: 'small-1' }
     const switched = await ctx.waterfall('agent/request', { agent, turn: 2, step: 1, signal: live() } as never, async () => next as never)
     expect(switched).toEqual(next)
+    const smallMapped = thresholdConfigFor(budget, { contextWindow: 32 * K, reservedOutputTokens: 4096 }, { headroomTokens: headroom })!
+    expect(priced.at(-1)).toMatchObject({ target: small, thresholdRatio: smallMapped.thresholdRatio, headroomTokens: headroom })
+    expect(resolveCompactSpec(priced.at(-1)!, 32 * K, 4096).thresholdTokens).toBe(smallMapped.thresholdTokens)
 
     session.append('request/header', { reason: 'model-switch', header: { config: { ...next, maxTokens: 4096 }, tools: TOOLS } } as never)
     await engine.compactIfNeeded(agent, 'pressure', live())
     const smallPolicy = resolveTargetPolicy(engine.config, small)
-    const smallMapped = thresholdConfigFor(budget, { contextWindow: 32 * K, reservedOutputTokens: 4096 }, { headroomTokens: 4096 })!
-    expect(smallPolicy).toMatchObject({ thresholdRatio: smallMapped.thresholdRatio, headroomTokens: 4096 })
+    expect(smallPolicy).toMatchObject({ thresholdRatio: smallMapped.thresholdRatio, headroomTokens: headroom })
     expect(smallPolicy.retainTokens).toBeLessThan(smallMapped.thresholdTokens)
     expect(resolveTargetPolicy(engine.config, big)).toEqual(bigPolicy)
+  })
+
+  it('prices a switch to an unmapped model of the same size at the level threshold, not the row default', async () => {
+    const { ctx, priced, track } = switchContext({ 'fake-1': WINDOW, 'fake-2': WINDOW }, 70 * K)
+    const budget = levelBudget()
+    const { host } = fakeHost({ budget: async () => budget })
+    ctx.provide(MEMORY_CLOUD_SERVICE, host)
+    const engine = track(new MemoryCompactionEngine(ctx))
+    const compacted = vi.spyOn(BasicCompactionEngine.prototype, 'compactRegion')
+    const { session, agent } = conversation()
+    const next = { ...session.requestHeader()!.config, model: 'fake-2' }
+
+    const rowDefault = resolveCompactSpec(resolveTargetPolicy(engine.baseConfig, { provider: 'fake', model: 'fake-2' }), WINDOW, 4096).thresholdTokens
+    expect(rowDefault).toBeLessThan(70 * K)
+    await expect(ctx.waterfall('agent/request', { agent, turn: 2, step: 1, signal: live() } as never, async () => next as never)).resolves.toEqual(next)
+
+    const mapped = thresholdConfigFor(budget, { contextWindow: WINDOW, reservedOutputTokens: 4096 }, { headroomTokens: DEFAULT_ENGINE_HEADROOM_TOKENS })!
+    expect(mapped.thresholdTokens).toBeGreaterThan(70 * K)
+    expect(resolveCompactSpec(priced.at(-1)!, WINDOW, 4096).thresholdTokens).toBe(mapped.thresholdTokens)
+    expect(compacted).not.toHaveBeenCalled()
+  })
+
+  it('leaves a switch alone for agents it cannot map', async () => {
+    const { ctx, priced, track } = switchContext({ 'fake-1': WINDOW, 'small-1': 32 * K }, 1000)
+    const { host } = fakeHost({ enabled: () => false })
+    ctx.provide(MEMORY_CLOUD_SERVICE, host)
+    const engine = track(new MemoryCompactionEngine(ctx, { headroomTokens: 4096 }))
+    const { session, agent } = conversation()
+    const next = { ...session.requestHeader()!.config, model: 'small-1' }
+    await expect(ctx.waterfall('agent/request', { agent, turn: 2, step: 1, signal: live() } as never, async () => next as never)).resolves.toEqual(next)
+    expect(priced.at(-1)).toEqual(resolveTargetPolicy(engine.baseConfig, { provider: 'fake', model: 'small-1' }))
+    expect(engine.config).toBe(engine.baseConfig)
+  })
+
+  it('keeps a mapping that an unmappable agent does not own, and prices that agent\'s own call with the row policy', async () => {
+    const seen = captureSuperConfig()
+    const assist = new Set<string>()
+    const { host } = fakeHost({ enabled: agent => agent === undefined || !assist.has(agent.session.id) })
+    const { engine } = setup({ host })
+    const owner = conversation({ id: 'owner' }).agent
+    const target = { provider: 'fake', model: 'fake-1' }
+
+    await engine.compactIfNeeded(owner, 'pressure', live())
+    const mapped = resolveTargetPolicy(engine.config, target)
+    expect(mapped).not.toEqual(resolveTargetPolicy(engine.baseConfig, target))
+
+    assist.add('assist')
+    await engine.compactIfNeeded(conversation({ id: 'sub', subagent: true }).agent, 'pressure', live())
+    await engine.compactIfNeeded(conversation({ id: 'assist' }).agent, 'pressure', live())
+    expect(seen.slice(1)).toEqual([engine.baseConfig, engine.baseConfig])
+    expect(resolveTargetPolicy(engine.config, target)).toEqual(mapped)
+
+    assist.add('owner')
+    await engine.compactIfNeeded(owner, 'pressure', live())
+    expect(seen[3]).toBe(engine.baseConfig)
+    expect(engine.config).toBe(engine.baseConfig)
+  })
+
+  it('keeps the mapping when one of its owners opts out', async () => {
+    captureSuperConfig()
+    const assist = new Set<string>()
+    const { host } = fakeHost({ enabled: agent => agent === undefined || !assist.has(agent.session.id) })
+    const { engine } = setup({ host })
+    const first = conversation({ id: 'first' }).agent
+    await engine.compactIfNeeded(first, 'pressure', live())
+    await engine.compactIfNeeded(conversation({ id: 'second' }).agent, 'pressure', live())
+    const mapped = engine.config
+    assist.add('first')
+    await engine.compactIfNeeded(first, 'pressure', live())
+    expect(engine.config).toEqual(mapped)
+  })
+
+  it.each([
+    ['a model-specific threshold ratio', { thresholdRatio: 0.15 }, { retainRatio: 0.1 }, 19_660],
+    ['a model-specific headroom', { headroomTokens: 100_000 }, {}, WINDOW - 4096 - 100_000],
+  ] satisfies [string, Partial<ModelCompactPolicyConfig>, MemoryEngineConfig, number][])('keeps the mapped retain below the threshold the row\'s %s yields', async (_label, row, top, threshold) => {
+    const meter = { measure: () => ({ totalTokens: 0, surfaceTokens: 0, baseline: 'estimated', nodes: [] }) }
+    const { host } = fakeHost({ budget: async () => levelBudget({ retainTokens: 100 * K }) })
+    const { engine } = setup({ host, meter, config: { ...top, modelPolicies: [{ provider: 'fake', model: 'fake-1', ...row }] } })
+
+    await expect(engine.compactIfNeeded(conversation().agent, 'pressure', live())).resolves.toBeNull()
+
+    const spec = resolveCompactSpec(resolveTargetPolicy(engine.config, { provider: 'fake', model: 'fake-1' }), WINDOW, 4096)
+    expect(spec.thresholdTokens).toBe(threshold)
+    expect(spec.retainTokens).toBe(Math.ceil(threshold * RETAIN_CEILING_SHARE) - 1)
   })
 
   it('merges the row\'s own model policies over the mapped values, field by field', async () => {

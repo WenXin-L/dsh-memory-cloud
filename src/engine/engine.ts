@@ -4,10 +4,19 @@ import type { CompactionResult, CompactionTrigger } from '@deepseek-ai/dsh-compa
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import type { BasicCompactionConfig, ModelCompactPolicyConfig, ResolvedConfig } from '@deepseek-ai/dsh-compaction-basic'
 import type { SummarizationInput, SummaryResult } from '@deepseek-ai/dsh-compaction-basic/src/summarizer.ts'
+import type { EpochHeader } from '@deepseek-ai/dsh-session'
 import z from '@deepseek-ai/schemastery'
 import type { CheckpointComposer, ModelCapacity, ResolvedBudget, ScopeDecision } from '../contracts.ts'
 import { createTokenEstimator } from '../pack/estimator.ts'
-import { DEFAULT_ENGINE_HEADROOM_TOKENS, meterRetainTokens, thresholdConfigFor, type SurfaceTokens, type ThresholdConfig } from './budget.ts'
+import {
+  DEFAULT_ENGINE_HEADROOM_TOKENS,
+  meterRetainTokens,
+  pressureThreshold,
+  retainCeiling,
+  thresholdConfigFor,
+  type SurfaceTokens,
+  type ThresholdConfig,
+} from './budget.ts'
 import {
   DEFAULT_COMPOSE_TIMEOUT_MS,
   isEngineHost,
@@ -41,7 +50,8 @@ export class ComposeTimeoutError extends Error {
  * locking, tool pairing, commit, and overflow recovery stay with the host
  * implementation; this class only adds the level thresholds as one
  * `modelPolicies` entry per routed model (with the retained tail rescaled to
- * the token meter's heuristic pricing, see {@link meterRetainTokens}) and
+ * the token meter's heuristic pricing, see {@link meterRetainTokens}), also
+ * for the model a switch proposes before compaction-basic prices it, and
  * replaces the summary text when
  * the `memoryCloud` service can compose one that DSH will accept. Every other
  * path is `super.summarize()`.
@@ -66,8 +76,8 @@ export class MemoryCompactionEngine extends BasicCompactionEngine {
   private readonly explicitMaxTokens: number | undefined
   /** Real-token estimate without the packing safety margin, to rescale the level retain for compaction-basic. */
   private readonly estimator = createTokenEstimator({ safetyMargin: 1 })
-  /** Mapped level thresholds keyed by routed `provider/model`; see {@link applyPolicy}. */
-  private readonly mappedPolicies = new Map<string, ModelCompactPolicyConfig>()
+  /** Mapped level thresholds keyed by routed `provider/model`; see {@link mapPolicy}. */
+  private readonly mappedPolicies = new Map<string, MappedPolicy>()
 
   constructor(ctx: Context, config: MemoryEngineConfig = {}) {
     super(ctx, basicConfig(config))
@@ -75,13 +85,18 @@ export class MemoryCompactionEngine extends BasicCompactionEngine {
     this.composeTimeoutMs = positiveInteger(config.composeTimeoutMs) ?? DEFAULT_COMPOSE_TIMEOUT_MS
     this.headroomTokens = nonNegativeInteger(config.headroomTokens) ?? DEFAULT_ENGINE_HEADROOM_TOKENS
     this.explicitMaxTokens = positiveInteger(config.maxTokens)
+    if (this.baseConfig.auto) this.mapModelSwitches()
   }
 
   override async compactIfNeeded(agent: Agent, trigger: CompactionTrigger, signal: AbortSignal): Promise<CompactionResult | null> {
     const mapped = await this.policyFor(agent, signal)
     const target = routedTarget(agent)
-    if (target !== undefined) this.applyPolicy(target, mapped)
-    return super.compactIfNeeded(agent, trigger, signal)
+    if (mapped !== undefined && target !== undefined) {
+      this.mapPolicy(target, mapped, agent)
+      return super.compactIfNeeded(agent, trigger, signal)
+    }
+    this.releasePolicies(agent)
+    return this.withRowPolicy(target, () => super.compactIfNeeded(agent, trigger, signal))
   }
 
   protected override async summarize(input: SummarizationInput, agent: Agent, signal?: AbortSignal): Promise<SummaryResult> {
@@ -147,18 +162,43 @@ export class MemoryCompactionEngine extends BasicCompactionEngine {
     return { summary: [{ type: 'text', text }], ...summaryTarget(agent) }
   }
 
-  /** compaction-basic's own summary, used for every hand-back. */
+  /** compaction-basic's own summary, used for every hand-back; an agent we cannot map gets the row's policy for its model. */
   private defaultSummary(input: SummarizationInput, agent: Agent, signal?: AbortSignal): Promise<SummaryResult> {
     signal?.throwIfAborted()
-    return super.summarize(input, agent, signal)
+    const target = this.mappingHost(agent) === undefined ? conversationRoute(agent) : undefined
+    return this.withRowPolicy(target, () => super.summarize(input, agent, signal))
   }
 
-  /** The level thresholds for the agent's routed model, `undefined` when the row config should apply unchanged. */
-  private async policyFor(agent: Agent, signal: AbortSignal): Promise<ThresholdConfig | undefined> {
-    const host = this.memoryHost()
-    if (host === undefined || !hostEnabled(host, agent) || isSubagent(agent)) return undefined
+  /**
+   * compaction-basic prices a model switch with `this.config` straight from
+   * its `agent/request` listener, without `compactIfNeeded`. That listener is
+   * registered with `prepend` and this one without, so this one runs inside
+   * its `next()`: it sees the final routing and maps the proposed model
+   * before the switch check resolves its policy. It never drops a mapping.
+   */
+  private mapModelSwitches(): void {
+    this.ctx.on('agent/request', async ({ agent, signal }, next) => {
+      const config = await next()
+      try {
+        const previous = agent.session.requestHeader()
+        if (signal.aborted || previous === undefined || config.provider === '' || config.model === ''
+          || (previous.config.provider === config.provider && previous.config.model === config.model)) return config
+        const mapped = await this.policyFor(agent, signal, { ...previous, config })
+        if (mapped !== undefined) this.mapPolicy({ provider: config.provider, model: config.model }, mapped, agent)
+      } catch {}
+      return config
+    })
+  }
+
+  /**
+   * The level thresholds for the agent's routed model (or the proposed
+   * header's), `undefined` when the row config should apply unchanged.
+   */
+  private async policyFor(agent: Agent, signal: AbortSignal, header?: EpochHeader): Promise<MappedThreshold | undefined> {
+    const host = this.mappingHost(agent)
+    if (host === undefined) return undefined
     try {
-      const capacity = await this.capacityFor(agent, signal)
+      const capacity = await this.capacityFor(agent, signal, header)
       if (capacity === undefined) return undefined
       const budget = await host.budgetFor(agent, { headroomTokens: this.headroomTokens, capacity })
       const mapped = thresholdConfigFor(budget, capacity, {
@@ -169,58 +209,100 @@ export class MemoryCompactionEngine extends BasicCompactionEngine {
       const retainTokens = meterRetainTokens(mapped.retainTokens, {
         thresholdTokens: mapped.thresholdTokens,
         memoryBudgetTokens: budget.memoryBudgetTokens,
-        ...this.surfaceFacts(agent),
+        ...this.surfaceFacts(agent, header),
       })
-      return { ...mapped, retainTokens }
+      return { ...mapped, retainTokens, capacity }
     } catch (error: unknown) {
       if (!signal.aborted) this.reportFallback(host, agent, 'budget-error', 'threshold', undefined, error)
       return undefined
     }
   }
 
+  /** The memory host when the agent's thresholds are ours to map: engine mode, and not a subagent. */
+  private mappingHost(agent: Agent): EngineHost | undefined {
+    const host = this.memoryHost()
+    return host === undefined || !hostEnabled(host, agent) || isSubagent(agent) ? undefined : host
+  }
+
   /**
-   * Record (or drop) the mapped policy of one routed model. The live config
-   * keeps the row's top-level fields and carries one `modelPolicies` entry per
-   * mapped model, so compaction-basic's model-switch check and the
+   * Record the mapped policy of one routed model for this agent. The live
+   * config keeps the row's top-level fields and carries one `modelPolicies`
+   * entry per mapped model, so compaction-basic's model-switch check and the
    * `super.summarize()` fallback resolve the policy of the model they price
    * rather than whichever agent compacted last.
    */
-  private applyPolicy(target: RouteTarget, mapped: ThresholdConfig | undefined): void {
+  private mapPolicy(target: RouteTarget, mapped: MappedThreshold, agent: Agent): void {
     const key = routeKey(target)
-    if (mapped === undefined) {
-      if (!this.mappedPolicies.delete(key)) return
-    } else {
-      this.mappedPolicies.set(key, {
+    const owners = this.mappedPolicies.get(key)?.owners ?? new Set<string>()
+    owners.add(agent.session.id)
+    this.mappedPolicies.set(key, {
+      policy: {
         provider: target.provider,
         model: target.model,
         thresholdRatio: mapped.thresholdRatio,
         headroomTokens: mapped.headroomTokens,
         retainTokens: mapped.retainTokens,
         maxTokens: mapped.maxTokens,
-      })
-    }
-    this.config = this.mappedPolicies.size === 0
-      ? this.baseConfig
-      : { ...this.baseConfig, modelPolicies: mergePolicies(this.baseConfig.modelPolicies, this.mappedPolicies) }
+      },
+      capacity: mapped.capacity,
+      owners,
+    })
+    this.config = this.composeConfig()
   }
 
-  /** The live surface under both pricings plus the meter's usage-anchored total, each omitted when unreadable. */
-  private surfaceFacts(agent: Agent): { surface?: SurfaceTokens; measuredTokens?: number } {
+  /** Drop the agent from every mapping it made; a mapping is removed once no agent that made it remains. */
+  private releasePolicies(agent: Agent): void {
+    const owner = agent.session.id
+    let released = false
+    for (const [key, entry] of this.mappedPolicies) {
+      if (!entry.owners.delete(owner) || entry.owners.size > 0) continue
+      this.mappedPolicies.delete(key)
+      released = true
+    }
+    if (released) this.config = this.composeConfig()
+  }
+
+  /**
+   * Run `start` with the row's own policy for `target`, then restore the live
+   * config. compaction-basic resolves the target policy synchronously at the
+   * start of `compactIfNeeded` and `summarize`, so this scopes it to one call
+   * of an agent we cannot map without dropping a mapping other agents rely on.
+   */
+  private withRowPolicy<T>(target: RouteTarget | undefined, start: () => T): T {
+    const key = target === undefined ? undefined : routeKey(target)
+    if (key === undefined || !this.mappedPolicies.has(key)) return start()
+    const live = this.config
+    this.config = this.composeConfig(key)
+    try {
+      return start()
+    } finally {
+      this.config = live
+    }
+  }
+
+  private composeConfig(excludedKey?: string): ResolvedConfig {
+    const mapped = new Map([...this.mappedPolicies].filter(([key]) => key !== excludedKey))
+    return mapped.size === 0
+      ? this.baseConfig
+      : { ...this.baseConfig, modelPolicies: mergePolicies(this.baseConfig.modelPolicies, mapped) }
+  }
+
+  /** The live surface under both pricings plus the meter's usage-anchored total for `header` (else the routed one), each omitted when unreadable. */
+  private surfaceFacts(agent: Agent, header?: EpochHeader): { surface?: SurfaceTokens; measuredTokens?: number } {
     const facts: { surface?: SurfaceTokens; measuredTokens?: number } = {}
     try {
       facts.surface = priceConversation(agent.session.deriveMessages(), text => this.estimator.estimate(text))
     } catch {}
     try {
       const meter = this.ctx.tokenMeter as Partial<Pick<typeof this.ctx.tokenMeter, 'measure'>> | undefined
-      const header = agent.session.requestHeader()
-      const total = typeof meter?.measure === 'function' ? meter.measure(agent.session, header).totalTokens : undefined
+      const priced = header ?? agent.session.requestHeader()
+      const total = typeof meter?.measure === 'function' ? meter.measure(agent.session, priced).totalTokens : undefined
       if (typeof total === 'number' && Number.isFinite(total)) facts.measuredTokens = total
     } catch {}
     return facts
   }
 
-  private async capacityFor(agent: Agent, signal?: AbortSignal): Promise<ModelCapacity | undefined> {
-    const header = agent.session.requestHeader()
+  private async capacityFor(agent: Agent, signal?: AbortSignal, header = agent.session.requestHeader()): Promise<ModelCapacity | undefined> {
     if (header === undefined || header.config.provider.length === 0 || header.config.model.length === 0) return undefined
     const info = await this.ctx.llm.resolveModelInfo(header.config.provider, header.config.model, signal)
     const contextWindow = info.context?.contextWindow
@@ -324,6 +406,18 @@ function optionalSeqs(seqs: number[] | undefined): { regionSeqs?: readonly numbe
 
 type RouteTarget = { readonly provider: string; readonly model: string }
 
+type MappedThreshold = ThresholdConfig & { readonly capacity: ModelCapacity }
+
+type MappedModelPolicy = ModelCompactPolicyConfig & Required<Pick<ModelCompactPolicyConfig, 'thresholdRatio' | 'headroomTokens' | 'retainTokens' | 'maxTokens'>>
+
+interface MappedPolicy {
+  readonly policy: MappedModelPolicy
+  /** The capacity the policy was mapped for, to re-derive its threshold under the row's own fields. */
+  readonly capacity: ModelCapacity
+  /** Session ids of the agents that made this mapping and have not opted out since. */
+  readonly owners: Set<string>
+}
+
 function routeKey(target: RouteTarget): string {
   return `${target.provider}\u0000${target.model}`
 }
@@ -342,11 +436,14 @@ function routedTarget(agent: Agent): RouteTarget | undefined {
  * The row's own `modelPolicies` keep precedence field by field over a mapped
  * entry for the same model (a row retention form replaces the mapped
  * `retainTokens`), exactly as they took precedence over the mapped top-level
- * fields before; models only we mapped are appended.
+ * fields before; models only we mapped are appended. A mapped `retainTokens`
+ * that survives the merge is capped again under the threshold the merged
+ * ratio and headroom yield, so a row threshold below the mapped one cannot
+ * make compaction-basic reject the policy.
  */
 function mergePolicies(
   rows: readonly Readonly<ModelCompactPolicyConfig>[],
-  mapped: ReadonlyMap<string, ModelCompactPolicyConfig>,
+  mapped: ReadonlyMap<string, MappedPolicy>,
 ): ModelCompactPolicyConfig[] {
   const merged: ModelCompactPolicyConfig[] = []
   const used = new Set<string>()
@@ -358,11 +455,16 @@ function mergePolicies(
       continue
     }
     used.add(key)
-    const ownsRetention = row.retainRatio !== undefined || row.retainTokens !== undefined
-    const { retainTokens: _retain, ...withoutRetention } = own
-    merged.push({ ...ownsRetention ? withoutRetention : own, ...definedFields(row) })
+    if (row.retainRatio !== undefined || row.retainTokens !== undefined) {
+      const { retainTokens: _retain, ...withoutRetention } = own.policy
+      merged.push({ ...withoutRetention, ...definedFields(row) })
+      continue
+    }
+    const policy = { ...own.policy, ...definedFields(row) }
+    const threshold = pressureThreshold(own.capacity, policy.thresholdRatio, policy.headroomTokens)
+    merged.push({ ...policy, retainTokens: Math.max(0, Math.min(own.policy.retainTokens, retainCeiling(threshold))) })
   }
-  for (const [key, own] of mapped) if (!used.has(key)) merged.push({ ...own })
+  for (const [key, own] of mapped) if (!used.has(key)) merged.push({ ...own.policy })
   return merged
 }
 

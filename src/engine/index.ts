@@ -31,7 +31,9 @@ export {
 export {
   DEFAULT_ENGINE_HEADROOM_TOKENS,
   meterRetainTokens,
+  pressureThreshold,
   RETAIN_CEILING_SHARE,
+  retainCeiling,
   thresholdConfigFor,
   type MeterRetainInput,
   type SurfaceTokens,
