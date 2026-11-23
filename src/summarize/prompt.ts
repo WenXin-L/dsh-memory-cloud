@@ -308,8 +308,18 @@ export function rollupUserPrompt(period: RollupPeriod, items: readonly RollupPro
   ].join('\n')
 }
 
-export function rollupRetryInstruction(issue: { readonly kind: 'empty' } | { readonly kind: 'too-long'; readonly tokens: number }, targetTokens: number, estimator: TokenEstimator): string {
-  return issue.kind === 'empty'
-    ? `上面没有得到有效的时期总结。请只输出时期总结正文，不超过 ${lengthHint(targetTokens, estimator)}。`
-    : `上面的时期总结约 ${issue.tokens} tokens，超过上限 ${targetTokens}。请压缩到不超过 ${lengthHint(targetTokens, estimator)}，保留人名、日期、数字和仍然有效的约定，只输出时期总结正文。`
+export type RollupRetryIssue =
+  | { readonly kind: 'empty' }
+  | { readonly kind: 'truncated' }
+  | { readonly kind: 'too-long'; readonly tokens: number }
+
+export function rollupRetryInstruction(issue: RollupRetryIssue, targetTokens: number, estimator: TokenEstimator): string {
+  switch (issue.kind) {
+    case 'empty':
+      return `上面没有得到有效的时期总结。请只输出时期总结正文，不超过 ${lengthHint(targetTokens, estimator)}。`
+    case 'truncated':
+      return `上面的时期总结没写完就被截断了。请重新写一份更简短、完整的时期总结，不超过 ${lengthHint(targetTokens, estimator)}，保留人名、日期、数字和仍然有效的约定，只输出时期总结正文。`
+    case 'too-long':
+      return `上面的时期总结约 ${issue.tokens} tokens，超过上限 ${targetTokens}。请压缩到不超过 ${lengthHint(targetTokens, estimator)}，保留人名、日期、数字和仍然有效的约定，只输出时期总结正文。`
+  }
 }

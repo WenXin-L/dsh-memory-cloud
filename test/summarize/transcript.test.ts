@@ -137,10 +137,50 @@ describe('splitTranscriptEntries / chunkTranscript', () => {
     for (const chunk of chunks) expect(estimator.estimate(chunk)).toBeLessThanOrEqual(200)
   })
 
-  it('hard-splits a single oversized entry', () => {
+  it('hard-splits a single oversized entry, repeating its stamp and label', () => {
     const chunks = chunkTranscript(`[21:30] User: ${'字'.repeat(1000)}`, 100, estimator)
     expect(chunks.length).toBeGreaterThan(5)
-    for (const chunk of chunks) expect(estimator.estimate(chunk)).toBeLessThanOrEqual(100)
-    expect(chunks.join('').replace(/\s/g, '')).toBe(`[21:30]User:${'字'.repeat(1000)}`)
+    for (const chunk of chunks) {
+      expect(estimator.estimate(chunk)).toBeLessThanOrEqual(100)
+      expect(chunk.startsWith('[21:30] User: 字')).toBe(true)
+    }
+    expect(chunks.map(chunk => chunk.slice('[21:30] User: '.length)).join('')).toBe('字'.repeat(1000))
+  })
+
+  it('starts every chunk with a full date stamp', () => {
+    const at = (day: number, hour: number, minute: number): number => Date.UTC(2026, 10, day, hour - 8, minute)
+    const long = (text: string): string => `${text}${'字'.repeat(80)}`
+    const text = renderTranscript([
+      userRecord(1, at(20, 21, 0), long('第一天')),
+      assistantRecord(2, at(20, 21, 1), [{ type: 'text', text: long('第一天回复') }]),
+      userRecord(3, at(21, 9, 0), long('第二天')),
+      assistantRecord(4, at(21, 9, 1), [{ type: 'text', text: long('第二天回复') }]),
+      userRecord(5, at(22, 10, 0), long('第三天')),
+      userRecord(6, at(22, 10, 2), long('明天提醒我交报告')),
+    ], { timeZone: 'Asia/Shanghai' })
+    expect(text).toContain('\n[10:02] User: 明天提醒我交报告')
+    const chunks = chunkTranscript(text, 100, estimator)
+    expect(chunks).toHaveLength(6)
+    for (const chunk of chunks) {
+      expect(chunk).toMatch(/^\[2026-11-\d{2} 周. \d{2}:\d{2}\] /)
+      expect(estimator.estimate(chunk)).toBeLessThanOrEqual(100)
+    }
+    expect(chunks[1]?.startsWith('[2026-11-20 周五 21:01] Assistant: 第一天回复')).toBe(true)
+    expect(chunks[5]?.startsWith('[2026-11-22 周日 10:02] User: 明天提醒我交报告')).toBe(true)
+
+    const paired = chunkTranscript(text, 200, estimator)
+    expect(paired).toHaveLength(3)
+    expect(paired[0]).toContain('\n[21:01] Assistant: 第一天回复')
+  })
+
+  it('carries the date and label onto every piece of an oversized entry', () => {
+    const chunks = chunkTranscript(`[2026-11-20 周五 21:30] User: 你好\n[21:31] Assistant: ${'字'.repeat(300)}\n  ${'词'.repeat(300)}`, 100, estimator)
+    expect(chunks[0]).toBe('[2026-11-20 周五 21:30] User: 你好')
+    for (const chunk of chunks.slice(1)) {
+      expect(chunk.startsWith('[2026-11-20 周五 21:31] Assistant: ')).toBe(true)
+      expect(estimator.estimate(chunk)).toBeLessThanOrEqual(100)
+    }
+    const body = chunks.slice(1).map(chunk => chunk.slice('[2026-11-20 周五 21:31] Assistant: '.length)).join('').replace(/\s/g, '')
+    expect(body).toBe(`${'字'.repeat(300)}${'词'.repeat(300)}`)
   })
 })

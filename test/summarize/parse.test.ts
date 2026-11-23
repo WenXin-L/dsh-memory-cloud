@@ -137,6 +137,73 @@ describe('parseSummaryOutput', () => {
     expect(parseSummaryOutput({ text: '<think>only thinking</think>', toolCalls: [] })).toBeUndefined()
   })
 
+  it('keeps think tags that are part of the answer', () => {
+    const summary = '## 发生了什么\n用户发现模型输出里的 <think> 块没有去掉，AI 改了正则。\n用户问为什么 </think> 之前的内容都被删掉了。'
+    const fromTool = parseSummaryOutput({ text: '', toolCalls: [{ name: 'memory_save', arguments: summaryJson({ gist: '修好了 </think> 的剥离问题', summary }) }] })
+    expect(fromTool?.result).toMatchObject({ gist: '修好了 </think> 的剥离问题', summary })
+
+    const engine = parseSummaryOutput({ text: `<think>先想想</think>\n\`\`\`json\n${summaryJson({ summary })}\n\`\`\``, toolCalls: [] })
+    expect(engine?.source).toBe('json')
+    expect(engine?.result.summary).toBe(summary)
+  })
+
+  it('lets only ===X=== markers open sections once that format is used', () => {
+    const text = [
+      '===总结===',
+      '小林下周三搬去杭州，AI 答应提醒他打包。',
+      '===摘要===',
+      '## 发生了什么',
+      '小林说下周三搬家。',
+      '人物：小林的妈妈也会来帮忙。',
+      '## 约定/待办',
+      'AI 答应提醒他打包。',
+      '===进行中===',
+      '无。',
+      '===重要度===',
+      '7',
+      '===关键词===',
+      '搬家',
+      '===人物===',
+      '小林',
+    ].join('\n')
+    expect(parseSummaryOutput({ text, toolCalls: [] })?.result).toEqual({
+      gist: '小林下周三搬去杭州，AI 答应提醒他打包。',
+      summary: '## 发生了什么\n小林说下周三搬家。\n人物：小林的妈妈也会来帮忙。\n## 约定/待办\nAI 答应提醒他打包。',
+      ongoing: [],
+      importance: 7,
+      keywords: ['搬家'],
+      people: ['小林'],
+      dates: [],
+      promises: [],
+    })
+  })
+
+  it('skips repeated section markers and their content', () => {
+    const text = '===总结===\n搬家。\n===摘要===\n小林搬家。\n===关键词===\n搬家\n===人物===\n小林\n===关键词===\n杭州\n===日期===\n2026-11-25：搬家'
+    expect(parseSummaryOutput({ text, toolCalls: [] })?.result).toMatchObject({
+      keywords: ['搬家'],
+      people: ['小林'],
+      dates: [{ date: '2026-11-25', what: '搬家' }],
+    })
+    const loose = parseSummaryOutput({ text: '## 总结\n搬家。\n## 摘要\n小林搬家。\n总结：他很期待。\n## 人物\n小林\n## 摘要\n重复', toolCalls: [] })
+    expect(loose?.result).toMatchObject({ summary: '小林搬家。\n总结：他很期待。', people: ['小林'] })
+  })
+
+  it('drops "none" list items with punctuation or synonyms', () => {
+    const parsed = parseSummaryOutput({
+      text: '',
+      toolCalls: [{ name: 'memory_save', arguments: summaryJson({ ongoing: ['无。'], keywords: ['暂无'], people: ['None.', '没有'], promises: [{ what: '没有' }] }) }],
+    })
+    expect(parsed?.result).toMatchObject({ ongoing: [], keywords: [], people: [], promises: [] })
+    const delimited = parseSummaryOutput({ text: '===总结===\n聊天。\n===摘要===\n闲聊。\n===进行中===\n暂无。\n===承诺===\n- 无。', toolCalls: [] })
+    expect(delimited?.result).toMatchObject({ ongoing: [], promises: [] })
+  })
+
+  it('reads importance after an echoed range hint', () => {
+    const parsed = parseSummaryOutput({ text: '===总结===\n聊天。\n===摘要===\n闲聊。\n===重要度===\n（1–10 的整数）\n8', toolCalls: [] })
+    expect(parsed?.result.importance).toBe(8)
+  })
+
   it('normalizes loose field types', () => {
     const parsed = parseSummaryOutput({
       text: '',
@@ -168,11 +235,15 @@ describe('parseSummaryOutput', () => {
 })
 
 describe('helpers', () => {
-  it('strips think blocks, dangling closes, and unterminated opens', () => {
+  it('strips only leading think blocks, including an unterminated one', () => {
     expect(stripThink('<think>a</think>答案')).toBe('答案')
-    expect(stripThink('推理过程</think>\n答案')).toBe('答案')
-    expect(stripThink('答案<think>没写完')).toBe('答案')
-    expect(stripThink('<thinking>x</thinking>A<think>y</think>B')).toBe('AB')
+    expect(stripThink('\n<THINKING>x</thinking>\n<think>y</think >\n答案')).toBe('答案')
+    expect(stripThink('  <think>没写完')).toBe('')
+    expect(stripThink('<thinking>x</thinking>A<think>y</think>B')).toBe('A<think>y</think>B')
+    expect(stripThink('答案<think>没写完')).toBe('答案<think>没写完')
+    expect(stripThink('用户问为什么 </think> 之前的内容都被删掉了。')).toBe('用户问为什么 </think> 之前的内容都被删掉了。')
+    expect(stripThink('<thinking-cap>帽子</thinking-cap>')).toBe('<thinking-cap>帽子</thinking-cap>')
+    expect(stripThink('<think x="1">a</think>答案')).toBe('<think x="1">a</think>答案')
   })
 
   it('clamps importance, rescaling 0–1 and 0–100 scales', () => {
@@ -190,6 +261,10 @@ describe('helpers', () => {
     expect(clampImportance('7分')).toBe(7)
     expect(clampImportance(6.6)).toBe(7)
     expect(clampImportance('high')).toBe(5)
+    expect(clampImportance('（1–10 的整数）\n8')).toBe(8)
+    expect(clampImportance('<1-10 的整数> 8')).toBe(8)
+    expect(clampImportance('（1-10）9')).toBe(9)
+    expect(clampImportance('<1-10 的整数>')).toBe(5)
   })
 
   it('normalizes ISO dates', () => {

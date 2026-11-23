@@ -71,6 +71,30 @@ describe('createRollupSummarizer', () => {
     expect(long.startsWith(outcome.text)).toBe(true)
   })
 
+  it('asks again after a cut-off answer and never keeps a cut-off sentence', async () => {
+    const cut = setup([{ text: '本周小林', finish: 'max-tokens' }, { text: '本周小林说下周三搬', finish: 'max-tokens' }])
+    await expect(cut.rollups.rollup(request())).rejects.toMatchObject({ code: 'parse' })
+    const instruction = cut.calls[1]?.messages[2]?.text ?? ''
+    expect(instruction).toContain('截断')
+    expect(instruction).not.toContain('超过上限')
+
+    const partial = setup([{ text: '本周小林', finish: 'max-tokens' }, { text: '本周小林说下周三搬家。他还说要请大家', finish: 'max-tokens' }])
+    expect((await partial.rollups.rollup(request())).text).toBe('本周小林说下周三搬家。')
+
+    const failed = setup([{ text: '本周小林说下周三搬家。他还说要请大家', finish: 'max-tokens' }, { finish: 'error', error: 'rate limited' }])
+    expect((await failed.rollups.rollup(request())).text).toBe('本周小林说下周三搬家。')
+  })
+
+  it('prefers the complete first answer when the retry is cut off', async () => {
+    const long = Array.from({ length: 30 }, (_, index) => `第${index + 1}天发生了一件事。`).join('')
+    const { rollups } = setup([{ text: long }, { text: '本周小林说下周三', finish: 'max-tokens' }])
+    const outcome = await rollups.rollup(request())
+    expect(outcome.text.startsWith('第1天发生了一件事。')).toBe(true)
+    expect(outcome.text.endsWith('。')).toBe(true)
+    expect(long.startsWith(outcome.text)).toBe(true)
+    expect(outcome.tokens).toBeLessThanOrEqual(60)
+  })
+
   it('retries an empty answer and fails after a second empty one', async () => {
     const ok = setup([{ text: '<think>只想了想</think>' }, { text: '这周很充实。' }])
     expect((await ok.rollups.rollup(request())).text).toBe('这周很充实。')
@@ -108,5 +132,10 @@ describe('cleanRollupText', () => {
     expect(cleanRollupText('<think>x</think>\n```\n时期总结：这周很好。\n```')).toBe('这周很好。')
     expect(cleanRollupText('{"text": "一月很忙。"}')).toBe('一月很忙。')
     expect(cleanRollupText('Summary: A quiet week.')).toBe('A quiet week.')
+  })
+
+  it('keeps think tags inside the answer', () => {
+    expect(cleanRollupText('总结：本周 <think> 标签讨论了三次。')).toBe('本周 <think> 标签讨论了三次。')
+    expect(cleanRollupText('<think>x</think>本周修了 </think> 的问题。')).toBe('本周修了 </think> 的问题。')
   })
 })

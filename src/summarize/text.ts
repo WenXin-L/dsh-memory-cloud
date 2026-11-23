@@ -1,17 +1,21 @@
 import type { Millis, TokenEstimator } from '../contracts.ts'
 
-const THINK_BLOCK = /<think(?:ing)?\b[^>]*>[\s\S]*?<\/think(?:ing)?\s*>/gi
-const THINK_CLOSE = /<\/think(?:ing)?\s*>/gi
-const THINK_OPEN = /<think(?:ing)?\b[^>]*>/i
+const LEADING_THINK_OPEN = /^\s*<think(?:ing)?>/i
+const THINK_CLOSE = /<\/think(?:ing)?\s*>/i
 
-/** Remove `<think>` reasoning, including an unterminated block or a dangling close tag. */
+/**
+ * Remove `<think>`/`<thinking>` blocks that open a raw completion; an
+ * unterminated leading block removes everything. Tags anywhere else are
+ * part of the answer and kept.
+ */
 export function stripThink(text: string): string {
-  let out = text.replace(THINK_BLOCK, '')
-  let lastClose = -1
-  for (const match of out.matchAll(THINK_CLOSE)) lastClose = match.index + match[0].length
-  if (lastClose >= 0) out = out.slice(lastClose)
-  const open = out.search(THINK_OPEN)
-  if (open >= 0) out = out.slice(0, open)
+  let out = text
+  for (let open = LEADING_THINK_OPEN.exec(out); open !== null; open = LEADING_THINK_OPEN.exec(out)) {
+    const rest = out.slice(open[0].length)
+    const close = THINK_CLOSE.exec(rest)
+    if (close === null) return ''
+    out = rest.slice(close.index + close[0].length)
+  }
   return out.trim()
 }
 
@@ -50,16 +54,35 @@ export function clipMiddle(text: string, maxChars: number): string {
 const CJK_TERMINATORS = new Set(['。', '！', '？', '；', '…', '\n'])
 const LATIN_TERMINATORS = new Set(['.', '!', '?', ';'])
 
+function isListNumber(text: string, dot: number): boolean {
+  return /^\s*\d+$/.test(text.slice(text.lastIndexOf('\n', dot - 1) + 1, dot))
+}
+
 function sentenceEnd(text: string, limit: number): number {
   for (let index = limit - 1; index >= 0; index--) {
     const char = text[index] as string
     if (CJK_TERMINATORS.has(char)) return index + 1
     if (LATIN_TERMINATORS.has(char)) {
       const next = text[index + 1]
-      if (next === undefined || /\s/.test(next)) return index + 1
+      if ((next === undefined || /\s/.test(next)) && !(char === '.' && isListNumber(text, index))) return index + 1
     }
   }
   return 0
+}
+
+const DANGLING_LINE = /(?:^|\n)[ \t]*(?:[-*+•·]|\d+[.)、]|#{1,6}(?:[ \t][^\n]*)?)[ \t]*$/
+
+/** Drop trailing lines that hold only a list marker or a Markdown heading. */
+function trimDanglingLines(text: string): string {
+  let out = text.trimEnd()
+  for (let match = DANGLING_LINE.exec(out); match !== null; match = DANGLING_LINE.exec(out)) out = out.slice(0, match.index).trimEnd()
+  return out
+}
+
+/** `text` cut back to its last sentence end (see {@link truncateToTokens}); empty when it has none. */
+export function completeSentences(text: string): string {
+  const boundary = sentenceEnd(text, text.length)
+  return boundary === 0 ? '' : trimDanglingLines(text.slice(0, boundary))
 }
 
 function largestPrefix(text: string, maxTokens: number, estimator: TokenEstimator, suffix = ''): number {
@@ -75,16 +98,18 @@ function largestPrefix(text: string, maxTokens: number, estimator: TokenEstimato
 
 /**
  * Cut `text` so its estimate fits `maxTokens`, preferring the last sentence
- * boundary; falls back to a hard cut with `…` when no boundary keeps at least
- * a third of the allowed prefix.
+ * boundary (a line break counts; the dot of a `1.` list marker does not) and
+ * dropping trailing lines left with only a list marker or a heading; falls
+ * back to a hard cut with `…` when that keeps less than a third of the
+ * allowed prefix.
  */
 export function truncateToTokens(text: string, maxTokens: number, estimator: TokenEstimator): string {
   if (estimator.estimate(text) <= maxTokens) return text
   const prefixLength = largestPrefix(text, maxTokens, estimator)
   const boundary = sentenceEnd(text, prefixLength)
-  if (boundary > 0 && boundary >= prefixLength / 3) {
-    const cut = text.slice(0, boundary).trimEnd()
-    if (cut.length > 0) return cut
+  if (boundary > 0) {
+    const cut = trimDanglingLines(text.slice(0, boundary))
+    if (cut.length > 0 && cut.length >= prefixLength / 3) return cut
   }
   const hard = largestPrefix(text, maxTokens, estimator, '…')
   if (hard === 0) return ''

@@ -219,30 +219,72 @@ export function splitTranscriptEntries(transcript: string): string[] {
   return entries.map(entry => entry.trimEnd()).filter(entry => entry.trim().length > 0)
 }
 
-/** Pack transcript entries into chunks whose estimate stays within `maxTokens`; an oversized entry is split on lines. */
+const ENTRY_HEADER = /^\[([^\]\n]*)\] ([^\n]*?): /
+const DATED_STAMP = /^(\d{4}-\d{2}-\d{2}(?: \S+)?) \d{2}:\d{2}$/
+const TIME_STAMP = /^\d{2}:\d{2}$/
+
+interface Piece {
+  /** Text when the piece follows another piece in its chunk. */
+  readonly inline: string
+  /** Text when the piece opens a chunk. */
+  readonly head: string
+}
+
+/**
+ * Pack transcript entries into chunks whose estimate stays within `maxTokens`.
+ * A chunk's first entry carries the full `YYYY-MM-DD 周X HH:mm` stamp. An
+ * oversized entry is split on lines; a later piece that opens a chunk repeats
+ * the entry's dated stamp and label.
+ */
 export function chunkTranscript(transcript: string, maxTokens: number, estimator: TokenEstimator): string[] {
-  const pieces: string[] = []
+  const pieces: Piece[] = []
+  let date: string | undefined
   for (const entry of splitTranscriptEntries(transcript)) {
-    let rest = entry
-    while (rest.length > 0 && estimator.estimate(rest) > maxTokens) {
-      const cut = splitPoint(rest, maxTokens, estimator)
-      pieces.push(rest.slice(0, cut).trimEnd())
-      rest = rest.slice(cut).replace(/^\n+/, '')
+    const header = ENTRY_HEADER.exec(entry)
+    let prefix = ''
+    if (header !== null) {
+      const [, stamp = '', label = ''] = header
+      date = DATED_STAMP.exec(stamp)?.[1] ?? date
+      prefix = `[${date !== undefined && TIME_STAMP.test(stamp) ? `${date} ${stamp}` : stamp}] ${label}: `
     }
-    if (rest.trim().length > 0) pieces.push(rest)
+    let text = header === null ? entry : prefix + entry.slice(header[0].length)
+    if (estimator.estimate(text) <= maxTokens) {
+      pieces.push({ inline: entry, head: text })
+      continue
+    }
+    const carry = prefix.length > 0 && estimator.estimate(prefix) * 2 < maxTokens
+    let lead = 0
+    for (;;) {
+      if (estimator.estimate(text) <= maxTokens) {
+        pieces.push({ inline: text.slice(lead), head: text })
+        break
+      }
+      const cut = Math.max(lead + 1, splitPoint(text, maxTokens, estimator))
+      const piece = text.slice(0, cut).trimEnd()
+      pieces.push({ inline: piece.slice(lead), head: piece })
+      const rest = text.slice(cut).replace(/^\n+/, '')
+      if (rest.trim().length === 0) break
+      text = carry ? prefix + rest.trimStart() : rest
+      lead = carry ? prefix.length : 0
+    }
   }
   const chunks: string[] = []
   let current: string[] = []
   let tokens = 0
   for (const piece of pieces) {
-    const cost = estimator.estimate(piece) + 1
+    const cost = estimator.estimate(piece.inline) + 1
     if (current.length > 0 && tokens + cost > maxTokens) {
       chunks.push(current.join('\n'))
       current = []
       tokens = 0
     }
-    current.push(piece)
-    tokens += cost
+    if (current.length === 0) {
+      current.push(piece.head)
+      tokens = estimator.estimate(piece.head) + 1
+    } else {
+      current.push(piece.inline)
+      tokens += cost
+    }
   }
   if (current.length > 0) chunks.push(current.join('\n'))
   return chunks

@@ -71,6 +71,8 @@ export function dedupeBy<T>(items: readonly T[], key: (item: T) => string): T[] 
   })
 }
 
+const NONE_ITEM = /^(?:无|暂无|没有|none|n\/a|\(none\)|（无）)[。.]?$/i
+
 function rawItems(value: unknown, separators: RegExp): unknown[] {
   if (Array.isArray(value)) return value
   if (typeof value === 'string') return value.split(separators)
@@ -80,7 +82,7 @@ function rawItems(value: unknown, separators: RegExp): unknown[] {
 function toStringList(value: unknown, limit: number, separators: RegExp): string[] {
   const items = rawItems(value, separators)
     .map(item => (typeof item === 'string' || typeof item === 'number' ? cleanItem(String(item)) : isRecord(item) ? cleanItem(toText(Object.values(item))) : ''))
-    .filter(item => item.length > 0 && !/^(?:无|none|n\/a|\(none\)|（无）)$/i.test(item))
+    .filter(item => item.length > 0 && !NONE_ITEM.test(item))
   return dedupeBy(items, item => item.toLowerCase()).slice(0, limit)
 }
 
@@ -133,13 +135,13 @@ function toPromises(value: unknown): Commitment[] {
   for (const item of rawItems(value, /\n/)) {
     if (isRecord(item)) {
       const what = cleanItem(toText(pick(item, ['what', '内容', '事项', 'promise', 'content', 'task'])))
-      if (what.length === 0) continue
+      if (what.length === 0 || NONE_ITEM.test(what)) continue
       const who = cleanItem(toText(pick(item, ['who', '谁', 'by', 'owner'])))
       const due = isoDate(toText(pick(item, ['due', '截止', '截止日期', 'deadline', 'date'])))
       out.push(commitment(what, who, due))
     } else if (typeof item === 'string') {
       const line = cleanItem(item)
-      if (line.length === 0 || /^(?:无|none|（无）)$/i.test(line)) continue
+      if (line.length === 0 || NONE_ITEM.test(line)) continue
       const who = cleanItem(/(?:谁|who)\s*[:：]\s*([^；;，,)）]+)/i.exec(line)?.[1] ?? '')
       const dueText = /(?:截止|due|deadline)\s*[:：]?\s*(\d{4}[^；;，,)）]*)/i.exec(line)?.[1]
       const what = line.replace(/\s*[（(][^（()）]*(?:谁|who|截止|due|deadline)[^（()）]*[)）]\s*$/i, '').trim()
@@ -149,11 +151,17 @@ function toPromises(value: unknown): Commitment[] {
   return dedupeBy(out, promise => promise.what).slice(0, LIST_LIMITS.promises)
 }
 
-/** Rescale a 0–1 or 0–100 scale (×10 / ÷10), then round and clamp to 1–10; anything unparseable (or a skeleton placeholder) becomes 5. */
+const RANGE_HINT = /[（(<][^（）()<>]*(?:整数|\d\s*[-–—~～]\s*10\b)[^（）()<>]*[）)>]/g
+
+/**
+ * Rescale a 0–1 or 0–100 scale (×10 / ÷10), then round and clamp to 1–10;
+ * echoed range hints such as `（1–10 的整数）` are ignored, and anything
+ * unparseable becomes 5.
+ */
 export function clampImportance(value: unknown): number {
   const raw = typeof value === 'number'
     ? value
-    : typeof value === 'string' && !isPlaceholder(value) ? Number(/-?\d+(?:\.\d+)?/.exec(value)?.[0]) : Number.NaN
+    : typeof value === 'string' ? Number(/-?\d+(?:\.\d+)?/.exec(value.replace(RANGE_HINT, ' '))?.[0]) : Number.NaN
   if (!Number.isFinite(raw)) return 5
   const n = raw > 0 && raw < 1 ? raw * 10 : raw > 10 && raw <= 100 ? raw / 10 : raw
   return Math.min(10, Math.max(1, Math.round(n)))
@@ -161,8 +169,8 @@ export function clampImportance(value: unknown): number {
 
 /** Normalize loosely typed fields; `undefined` when gist or summary is empty. */
 export function normalizeSummary(fields: Partial<Record<FieldKey, unknown>>): EpisodeSummaryResult | undefined {
-  const gist = oneLine(stripThink(toText(fields.gist)))
-  const summary = tidyBlock(stripThink(toText(fields.summary)))
+  const gist = oneLine(toText(fields.gist))
+  const summary = tidyBlock(toText(fields.summary))
   if (gist.length === 0 || summary.length === 0 || isPlaceholder(gist) || isPlaceholder(summary)) return undefined
   return {
     gist,
@@ -292,7 +300,16 @@ const FIELD_LOOKUP = new Map<string, FieldKey>(
   (Object.entries(FIELD_NAMES) as [FieldKey, readonly string[]][]).flatMap(([field, names]) => names.map(name => [name.toLowerCase(), field] as const)),
 )
 
-function sectionMarker(line: string): { readonly key: FieldKey; readonly inline: string } | undefined {
+interface SectionMarker {
+  readonly key: FieldKey
+  readonly inline: string
+  /** Opened by a delimiter (`===`, `#`, `**`, a bracket) rather than a bare `Label:`. */
+  readonly delimited: boolean
+  /** The `===X===` style of the fallback format. */
+  readonly fenced: boolean
+}
+
+function sectionMarker(line: string): SectionMarker | undefined {
   let rest = line.trim()
   const open = /^(?:#{1,6}\s*|={2,}\s*|\*\*\s*|【\s*|\[\s*|<\s*)/.exec(rest)
   if (open !== null) rest = rest.slice(open[0].length)
@@ -304,25 +321,37 @@ function sectionMarker(line: string): { readonly key: FieldKey; readonly inline:
   const close = /^\s*(?:\*\*|】|\]|>|={2,})/.exec(rest)
   if (close !== null) rest = rest.slice(close[0].length)
   rest = rest.trim()
-  if (rest.length === 0) return { key, inline: '' }
+  const style = { delimited: open !== null, fenced: open?.[0].startsWith('=') === true }
+  if (rest.length === 0) return { key, inline: '', ...style }
   const colon = /^[:：]\s*/.exec(rest)
   if (colon !== null) {
-    return { key, inline: rest.slice(colon[0].length).replace(/^\*\*\s*/, '').replace(/\s*(?:\*\*|={2,})\s*$/, '').trim() }
+    return { key, inline: rest.slice(colon[0].length).replace(/^\*\*\s*/, '').replace(/\s*(?:\*\*|={2,})\s*$/, '').trim(), ...style }
   }
-  if (open !== null && close !== null) return { key, inline: rest }
+  if (open !== null && close !== null) return { key, inline: rest, ...style }
   return undefined
 }
 
-/** Last-resort parser for `===总结===` / `## 摘要` / `Gist:` style sections. */
+/**
+ * Last-resort parser for `===总结===` / `## 摘要` / `Gist:` style sections.
+ * When any `===X===` marker is present only those open sections; the first
+ * section of each field wins, and a repeated delimited marker skips its
+ * content up to the next new section.
+ */
 export function parseDelimited(text: string): EpisodeSummaryResult | undefined {
+  const lines = text.split(/\r?\n/).filter(line => !/^\s*```/.test(line))
+  const fencedOnly = lines.some(line => sectionMarker(line)?.fenced === true)
   const sections = new Map<FieldKey, string[]>()
   let current: string[] | undefined
-  for (const line of text.split(/\r?\n/)) {
-    if (/^\s*```/.test(line)) continue
-    const marker = sectionMarker(line)
+  for (const line of lines) {
+    const found = sectionMarker(line)
+    const marker = found !== undefined && (found.fenced || !fencedOnly) ? found : undefined
     if (marker !== undefined && !sections.has(marker.key)) {
       current = marker.inline.length > 0 ? [marker.inline] : []
       sections.set(marker.key, current)
+      continue
+    }
+    if (marker?.delimited === true) {
+      current = undefined
       continue
     }
     current?.push(line)
@@ -343,7 +372,7 @@ export function parseDelimited(text: string): EpisodeSummaryResult | undefined {
 /**
  * Parse one summarizer completion: the `memory_save` tool call first (then any
  * other tool call carrying summary fields), then a JSON object in the text,
- * then delimiter sections. `<think>` blocks are stripped from the text.
+ * then delimiter sections. A leading `<think>` block is stripped from the text.
  */
 export function parseSummaryOutput(completion: Pick<LlmCompletion, 'text' | 'toolCalls'>, toolName: string = MEMORY_SAVE_TOOL_NAME): ParsedSummary | undefined {
   const calls = [

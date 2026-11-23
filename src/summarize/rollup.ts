@@ -10,7 +10,8 @@ import {
   rollupRetryInstruction,
   rollupUserPrompt,
 } from './prompt.ts'
-import { resolveTimeZone, stripThink, tidyBlock, truncateToTokens } from './text.ts'
+import type { RollupRetryIssue } from './prompt.ts'
+import { completeSentences, resolveTimeZone, stripThink, tidyBlock, truncateToTokens } from './text.ts'
 
 export interface RollupItem {
   /** When the entry happened (episode start), shown as a date. */
@@ -56,7 +57,7 @@ export interface RollupSummarizerOptions {
   readonly timeZone?: string
 }
 
-/** Strip reasoning, fences, JSON wrappers, and a leading label from a plain-text answer. */
+/** Strip a leading reasoning block, fences, JSON wrappers, and a leading label from a plain-text answer. */
 export function cleanRollupText(raw: string): string {
   let text = stripThink(raw)
   const fenced = /^```[A-Za-z]*[ \t]*\n([\s\S]*?)\n?```$/.exec(text.trim())
@@ -73,8 +74,11 @@ export function cleanRollupText(raw: string): string {
 
 /**
  * Merge many gists or summaries of one week/month/year into a single period
- * gist under `targetTokens`. Same retry/truncate policy as the episode
- * summarizer; entry lists above the input cap are rolled up in batches first.
+ * gist under `targetTokens`. One retry covers empty, cut-off (`max-tokens`),
+ * or over-length output; a complete answer is preferred, a cut-off one is
+ * kept only up to its last sentence end, and remaining overflow is cut at a
+ * sentence boundary. Entry lists above the input cap are rolled up in batches
+ * first.
  */
 export function createRollupSummarizer(options: RollupSummarizerOptions): RollupSummarizer {
   const { llm, estimator, clock } = options
@@ -96,30 +100,36 @@ export function createRollupSummarizer(options: RollupSummarizerOptions): Rollup
 
       const once = async (group: readonly RollupItem[]): Promise<string> => {
         const messages: CallRequest['messages'] = [{ role: 'user', text: rollupUserPrompt(request.period, group, target, estimator, timeZone) }]
-        const call = (list: CallRequest['messages']): Promise<LlmCompletion> => ledger.complete({
-          system: ROLLUP_SYSTEM_PROMPT,
-          messages: list,
-          maxTokens: outputTokens,
-        })
-        const first = await call(messages)
-        const firstText = cleanRollupText(first.text)
-        const firstTokens = estimator.estimate(firstText)
-        if (firstText.length > 0 && first.finish !== 'max-tokens' && firstTokens <= target) return firstText
-        const issue = firstText.length === 0 ? { kind: 'empty' as const } : { kind: 'too-long' as const, tokens: firstTokens }
-        let retried = ''
-        try {
-          const second = await call([
-            ...messages,
-            { role: 'assistant', text: firstText.length > 0 ? firstText : '(empty)' },
-            { role: 'user', text: rollupRetryInstruction(issue, target, estimator) },
-          ])
-          retried = cleanRollupText(second.text)
-        } catch (error) {
-          if (firstText.length === 0 || (error instanceof SummarizeError && error.code === 'aborted')) throw error
+        const call = async (list: CallRequest['messages']): Promise<{ readonly text: string; readonly cut: boolean }> => {
+          const completion = await ledger.complete({ system: ROLLUP_SYSTEM_PROMPT, messages: list, maxTokens: outputTokens })
+          return { text: cleanRollupText(completion.text), cut: completion.finish === 'max-tokens' }
         }
-        const candidate = retried.length > 0 ? retried : firstText
+        const first = await call(messages)
+        const firstTokens = estimator.estimate(first.text)
+        if (first.text.length > 0 && !first.cut && firstTokens <= target) return first.text
+        const issue: RollupRetryIssue = first.text.length === 0
+          ? { kind: 'empty' }
+          : first.cut ? { kind: 'truncated' } : { kind: 'too-long', tokens: firstTokens }
+        const answers = [first]
+        try {
+          answers.unshift(await call([
+            ...messages,
+            { role: 'assistant', text: first.text.length > 0 ? first.text : '(empty)' },
+            { role: 'user', text: rollupRetryInstruction(issue, target, estimator) },
+          ]))
+        } catch (error) {
+          if (first.text.length === 0 || (error instanceof SummarizeError && error.code === 'aborted')) throw error
+        }
+        const usable = answers.filter(answer => answer.text.length > 0)
+        const candidate = usable.find(answer => !answer.cut)?.text
+          ?? usable.map(answer => completeSentences(answer.text)).find(text => text.length > 0)
+          ?? ''
         const fitted = truncateToTokens(candidate, target, estimator)
-        if (fitted.length === 0) throw new SummarizeError('parse', `rollup ${request.period.key} produced no usable text`)
+        if (fitted.length === 0) {
+          throw new SummarizeError('parse', usable.length === 0
+            ? `rollup ${request.period.key} produced no usable text`
+            : `rollup ${request.period.key} was cut off by the output limit before a complete sentence`)
+        }
         return fitted
       }
 
