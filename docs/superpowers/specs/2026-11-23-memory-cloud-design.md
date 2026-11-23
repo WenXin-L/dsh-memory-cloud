@@ -98,7 +98,7 @@ DSH 记忆类插件已有 900+ 个（[awesome-dsh-plugin/memory](https://github.
 
 - **捕获**：`session/event` → 追加到当前片段 `raw.jsonl`（含工具调用/结果，reasoning 可选排除）。跳过子 agent、本插件注入的消息、其他插件注入的 `source.kind`（防止"总结的总结"），也跳过自身的总结请求。
 - **片段封口**：压缩替换区间、空闲超时、`session/disposed`、单片段超过 `maxEpisodeTokens`。`session/flush`/dispose 时排空队列。
-- **总结调用**：结构化工具调用输出 + 分隔符兜底解析；长度超限重试一次，再按句子边界截断；超长片段分块 map-reduce；剥离 `<think>`。prompt 写明"不要续写对话"，保留人名、日期（转绝对日期）、数字、偏好、否定、状态变化、约定，跟随对话语言，陪伴向。默认模型为当前 provider 的 `deepseek-flash`、`reasoningEffort: off`，可配置；自定义 purpose，并注册日志上传 exclusion。后台任务有冷却、每日配额、超时、指数退避、熔断，全部 try/catch。
+- **总结调用**：结构化工具调用输出 + 分隔符兜底解析；长度超限重试一次，再按句子边界截断；超长片段分块 map-reduce；剥离输出开头的 `<think>` 块。prompt 写明"不要续写对话"，保留人名、日期（转绝对日期）、数字、偏好、否定、状态变化、约定，跟随对话语言，陪伴向。默认模型为当前 provider 的 `deepseek-flash`、`reasoningEffort: off`，可配置；自定义 purpose，并注册日志上传 exclusion。后台任务有冷却、每日配额、超时、指数退避、熔断，全部 try/catch。
 
 ### 3.6 按需回忆（工具与命令）
 

@@ -37,14 +37,16 @@ The browser reaches the same API through the Typert Remote namespace `memoryClou
 
 ## Session tags
 
-`setSessionTags(sessionId, tags)` is for chat bridges: routing tags such as `qqbot:<bot>:group:<id>` that `scopeRules` match, next to the synthetic `preset:`, `cwd:` and `session:` tags. Subagents inherit their parent's tags.
+`setSessionTags(sessionId, tags)` is for chat bridges: routing tags such as `qqbot:<bot>:group:<id>` that `scopeRules` match, next to the synthetic `preset:`, `cwd:` and `session:` tags (`preset:` names the preset the session runs now, see below). A subagent is resolved through the root session of its delegation chain, whatever its own tags: the resolver follows `parentSession` while the session is a subagent and stops at a parent it does not know.
 
 - The call replaces the session's tags. Tags are trimmed; empty ones, ones longer than 1024 characters and any beyond 64 are dropped. An empty list clears them.
-- The cached descriptor is dropped and the scope is resolved again. If the session had been described before and its decision (scope and capture flag) is unchanged, nothing else happens.
-- If the decision changed, the injector and composer forget the session, and `capture.rescope(sessionId)` seals the open episode in the old scope (reason `end`); the next event is captured under the new scope. A tag set before the session was first described changes nothing else, because there is no earlier decision.
-- An owner memory block already in the context stays there until the next compaction; the injector logs a warning when the session no longer may read it.
+- Tags are kept per DSH app for the whole process, so they survive a reload of this plugin in the same process (an upgrade, a `storageRoot` edit, re-enabling it) while the session is live. They are dropped on `session/disposed`.
+- The cached descriptor is dropped and the scope is resolved again. A session with no live agent is described from `ctx.sessions`, or else from its previous descriptor, so the comparison below still applies to it. If the session had been described before and its decision (scope and capture flag) is unchanged, nothing else happens.
+- If the decision changed, the injector drops the session's cached block and pending pack (`injector.rescope`) but remembers which scope's block it showed, the composer forgets the session, and `capture.rescope(sessionId)` seals the open episode in the old scope (reason `end`); the next event is captured under the new scope. A tag set before the session was first described changes nothing else, because there is no earlier decision.
+- The same path runs on `agent-preset/selected`: the session is described again with the preset it runs now (`agentPresets.presetForSession`, else the event's preset), and its cached compaction mode is recomputed.
+- An owner memory block already in the context stays there until the next compaction; because the injector remembers which scope's block it showed, it logs a warning when the session no longer may read it.
 
-Sessions that no rule matches follow `unmatchedSessions` (`auto` \| `owner` \| `isolated`, default `auto`): `owner` uses the private owner scope, `isolated` gives each session its own scope `session-<hash>` (a subagent uses its parent's), and `auto` isolates while a known chat-bridge plugin (`dsh-qq-bridge`, `dsh-qqbot`, `dsh-qq-rooms`, `dsh-onebot-qq`, `dsh-wechat`) is loaded and uses owner otherwise. Only a decision that is `owner` **and** private may read owner memory (`canReadScope` / `mayUseOwnerMemory` in `src/scope/guard.ts`): a rule whose template is literally `owner`, or an owner decision of `unmatchedSessions`. A template that merely expands to `owner` gets `owner-<hash>`.
+Sessions that no rule matches follow `unmatchedSessions` (`auto` \| `owner` \| `isolated`, default `auto`): `owner` uses the private owner scope, `isolated` gives each session its own scope `session-<hash>` (a subagent shares the scope of its delegation chain's root session), and `auto` isolates while a known chat-bridge plugin (`dsh-qq-bridge`, `dsh-qqbot`, `dsh-qq-rooms`, `dsh-onebot-qq`, `dsh-wechat`) is loaded and uses owner otherwise. Only a decision that is `owner` **and** private may read owner memory (`canReadScope` / `mayUseOwnerMemory` in `src/scope/guard.ts`): a rule whose template is literally `owner`, or an owner decision of `unmatchedSessions`. A template that merely expands to `owner` gets `owner-<hash>`.
 
 ## Live settings (Remote only)
 
@@ -53,7 +55,7 @@ The Remote also serves the plugin's live (`.volatile()`) settings for the page's
 | Remote endpoint | Result | Notes |
 |---|---|---|
 | `memoryCloud/getConfig()` | `ConfigView` | `{config, defaults}`: every live field as plain values (`level`, `compactionMode`, `idleMinutes`, `idleCompactRatio`, `halfLifeDays`, `maxEpisodeTokens`, `captureReasoning`, `summarizer.{provider, model, reasoningEffort}`, `overrides`, `scopeRules`, `unmatchedSessions`) and the schema defaults. |
-| `memoryCloud/setConfig(patch)` | `SettingWriteResult` | `patch` (`ConfigPatch`) holds only the fields to change. `summarizer` lists just its changed fields; `overrides` and `scopeRules` replace the whole value (an override left out falls back to the level default). |
+| `memoryCloud/setConfig(patch)` | `SettingWriteResult` | `patch` (`ConfigPatch`) holds only the fields to change. `summarizer` lists just its changed fields; `overrides` and `scopeRules` replace the whole value (an override left out falls back to the level's own value). |
 
 `setConfig` checks the patch before writing anything and answers `{ok: false, message}` for:
 - unknown or non-volatile fields (e.g. `storageRoot`);

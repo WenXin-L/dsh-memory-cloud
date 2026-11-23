@@ -11,7 +11,7 @@
 - **兼作压缩引擎**：接管后，DSH 的压缩检查点本身就是记忆块，被压缩掉的那段同时封存为一个片段。
 - **压缩程度可调**：5 个档位，可以随时切换，立即生效。
 
-> 状态：预发布（`0.0.0`），尚未发布到 npm。只在 DSH `0.2.2-rc.5` 上用假模型做过端到端测试，详见 [局限与尚未验证的部分](#局限与尚未验证的部分)。
+> 版本：`0.1.0`，首个公开预发布版本，变更见 [更新日志](CHANGELOG.md)。尚未发布到 npm，DSH 本身也还是开发者预览版。只在 DSH `0.2.2-rc.5` 上用假模型做过端到端测试，详见 [局限与尚未验证的部分](#局限与尚未验证的部分)。
 
 ## 目录
 
@@ -58,7 +58,7 @@
 - 一次上下文压缩替换了它；
 - 空闲超过 `idleMinutes`（默认 30 分钟）；
 - 会话被释放；
-- 原文超过 `maxEpisodeTokens`（默认 32768）。
+- 原文超过 `maxEpisodeTokens`（默认 32768；设为 0 则不按大小封存）。
 
 封存后，后台会为片段生成总结和摘要（提示词版本 `memory-cloud-summary/2`）：
 - 摘要会保留人名、日期、数字、偏好、否定、状态变化和任一方的约定，按"发生了什么 / 约定/待办 / 关键事实 / 情绪与关系变化"分节，没有内容的节省略；
@@ -102,7 +102,7 @@
 ### 空闲整理（"睡眠整理"）
 
 agent 变为空闲并保持 20 秒（期间状态有任何变化就重新计时），如果上下文压力超过 `idleCompactRatio`（默认 0.5），插件会调用该 agent 压缩引擎的 `compactNow()`，把压缩挪到你不用等的时候。触发条件：
-- 每个 agent 两分钟内最多尝试一次；
+- 每个 agent 两分钟内最多尝试一次，任何一次压缩完成后的两分钟内也不尝试；
 - 可压缩的区间太短时跳过；
 - 子 agent 和 `off` 模式不做。
 
@@ -121,7 +121,7 @@ T = 0.5^(Δt / (h·S)) × (0.5 + I/20)
 - S：1 + 被回忆次数；
 - I：重要度（1–10）。
 
-分数越低，越容易从摘要降为总结，最终被时期总结吸收或省略。用 `memory_read` 读取一个片段（读摘要，或读到了原文记录）会让 S 加 1 并刷新回忆时间，下次打包时它会"回暖"。"遗忘"只改变注入层级，**从不删除文件**。`memory_pin` 让片段优先保留，`memory_hide` 让它不再出现（可撤销）。
+分数越低，越容易从摘要降为总结，最终被时期总结吸收或省略。用 `memory_read` 读取一个片段（读摘要，或从第一页读到了原文记录；继续翻页不再计数）会让 S 加 1 并刷新回忆时间，下次打包时它会"回暖"。"遗忘"只改变注入层级，**从不删除文件**。`memory_pin` 让片段优先保留，`memory_hide` 让它不再出现（可撤销）。
 
 ### 时期总结（rollup）
 
@@ -129,11 +129,11 @@ T = 0.5^(Δt / (h·S)) × (0.5 + I/20)
 1. 先把已结束、且早于 7 天的 ISO 周合并为周总结 `rollups/2026-W47.md`；
 2. 至少两周都有周总结的月份，再合并为月总结 `rollups/2026-11.md`。
 
-置顶、隐藏和最近 7 天内的片段不参与合并。时期总结不在压缩路径上生成，压缩时只读取已有的。
+置顶、隐藏和最近 7 天内的片段不参与合并。片段在合并之后才被隐藏时，包含它的时期总结以及在其之上合并的月 / 年总结都不再注入记忆块，其中仍可见的片段改为照常逐条打包。时期总结不在压缩路径上生成，压缩时只读取已有的。
 
 后台任务的限制：
 - 单次超时 5 分钟；
-- 失败后从 30 秒开始指数退避，最多 30 分钟，最多 8 次；
+- 失败后从 30 秒开始指数退避，最多 30 分钟，最多 8 次。用完次数后，片段标为失败，时期总结记为已放弃（`state.json` 的 `exhaustedRollups`），都不再自动重新排队，`/memory summarize-now` 会重试它们；
 - 连续失败 5 次熔断 30 分钟；
 - 每天最多 200 次。
 
@@ -146,16 +146,24 @@ T = 0.5^(Δt / (h·S)) × (0.5 + I/20)
 
 ### Web / headless profile（CLI）
 
-发布到 npm 之后：
+本包**尚未发布到 npm**。发布之后可以按包名安装：
 
 ```sh
 dsh plugin --profile web add dsh-memory-cloud-brain
 ```
 
-发布之前，从本地 checkout 安装（pnpm 以 `link:` 方式链接；端到端测试用的就是这种方式）：
+在那之前，直接从 GitHub 安装（这条路径还没有做端到端测试）：
 
 ```sh
-git clone <本仓库> dsh-memory-cloud-brain
+dsh plugin --profile web add github:WenXin-L/dsh-memory-cloud
+```
+
+仓库里没有构建产物 `lib/`，pnpm 取得源码后会运行本包的 `prepare` 脚本（`tsdown`）构建，再安装构建结果。pnpm 10.26 起默认拦截 git 依赖的 `prepare`，第一次安装可能报 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`。这时在 profile 的 `pnpm-workspace.yaml`（`$DSH_HOME/profiles/<profile>/pnpm-workspace.yaml`）的 `allowBuilds` 中，把 pnpm 报错里给出的键设为 `true`，再运行一次同样的命令。键要照抄报错输出：对 git 依赖，pnpm 11 不认只写包名的键。
+
+也可以从本地 checkout 安装（pnpm 以 `link:` 方式链接；端到端测试用的就是这种方式）：
+
+```sh
+git clone https://github.com/WenXin-L/dsh-memory-cloud.git dsh-memory-cloud-brain
 cd dsh-memory-cloud-brain
 pnpm install
 pnpm build
@@ -165,15 +173,15 @@ dsh plugin --profile web add "$PWD"
 或者打一个 tarball 再安装（这条路径还没有做端到端测试）：
 
 ```sh
-npm pack                     # 生成 dsh-memory-cloud-brain-0.0.0.tgz
-dsh plugin --profile web add ./dsh-memory-cloud-brain-0.0.0.tgz
+npm pack                     # 生成 dsh-memory-cloud-brain-0.1.0.tgz
+dsh plugin --profile web add ./dsh-memory-cloud-brain-0.1.0.tgz
 ```
 
 headless 和 SDK 宿主同理，把 `--profile web` 换成对应的 profile，例如 `--profile headless`。headless 下启用引擎模式的方法见[下一节](#headless--sdk)。
 
 ### Desktop
 
-在 Desktop 应用中打开 **Plugins → Add plugin**，输入包名 `dsh-memory-cloud-brain`（发布后）或 tarball 路径，然后启用。Desktop 自己管理它的 profile。Desktop 上尚未实际测试过本插件。
+在 Desktop 应用中打开 **Plugins → Add plugin**，输入包名 `dsh-memory-cloud-brain`（发布后）、`github:WenXin-L/dsh-memory-cloud` 或 tarball 的绝对路径，然后启用。Desktop 自己管理它的 profile。Desktop 上尚未实际测试过本插件。
 
 ### 重启说明
 
@@ -235,7 +243,7 @@ Plugins 页面中本插件的设置页包括：
 - **高级设置**（折叠，第一次展开时读取），包含其余全部实时配置项：
   - 后台总结：`summarizer.provider` / `model` / `reasoningEffort`；
   - 捕获与遗忘：`idleMinutes`、`idleCompactRatio`、`halfLifeDays`、`maxEpisodeTokens`、`captureReasoning`；
-  - 档位覆盖：`overrides.*`，留空即用档位默认值（输入框中显示该默认值）；
+  - 档位覆盖：`overrides.*`，留空即沿用档位自身的数值。输入框中的灰字在已知时是当前会话按其模型算出的实际值，否则是该档位的预设上限。覆盖值跳过"不超过上一档"的限制（见[压缩档位](#压缩档位默认-3)），所以填入预设上限可能比留空得到更大的值；
   - 作用域规则：增删、上下移动 `scopeRules`，以及[未匹配规则的会话](#未匹配规则的会话unmatchedsessions) `unmatchedSessions`。
 
 高级设置在浏览器中先检查数字范围，以及 `$n` 是否超过匹配模式的通配符个数；宿主写入前再按配置 schema 检查一遍，不通过就整体不写。表单有"放弃修改"和"恢复默认"两个按钮，"恢复默认"只把出厂值填进表单，点保存才写入。
@@ -299,7 +307,7 @@ K = 1024 tokens。W 为模型上下文窗口，O 为输出预留。
 | `idleMinutes` | `30` | 空闲多久后把未封存的尾部封存为片段 |
 | `idleCompactRatio` | `0.5` | 空闲时上下文压力超过多少就执行 `compactNow()` |
 | `halfLifeDays` | `14` | 遗忘半衰期（天） |
-| `maxEpisodeTokens` | `32768` | 单个片段原文超过此大小即封存 |
+| `maxEpisodeTokens` | `32768` | 单个片段原文超过此大小即封存；`0` 表示不按大小封存 |
 | `captureReasoning` | `true` | 原文存档是否保留模型的推理内容 |
 | `summarizer.provider` | 空 | 后台总结用的 provider；空表示用当前默认模型的 provider |
 | `summarizer.model` | `deepseek-flash` | 后台总结用的模型；无法解析时退回默认模型并记一条警告 |
@@ -344,7 +352,7 @@ K = 1024 tokens。W 为模型上下文窗口，O 为输出预留。
         scope: "qq-user-$2"
 ```
 
-每个会话自动带有 `preset:<预设名>`、`cwd:<工作目录>`、`session:<会话 id>` 这几个标签，也可以用来写规则（例如 `cwd:/home/me/qq-rooms/*`）。子 agent 继承父会话的标签。
+每个会话自动带有 `preset:<预设名>`、`cwd:<工作目录>`、`session:<会话 id>` 这几个标签，也可以用来写规则（例如 `cwd:/home/me/qq-rooms/*`）。子 agent 不按自己的标签解析：它沿 `parentSession` 找到委派链最上层的会话，作用域跟那个会话的决定走。
 
 DSH 的会话头没有标签字段。聊天桥接插件（或你的集成代码）应在会话创建时提供标签：
 
@@ -358,7 +366,7 @@ ctx.get('memoryCloud')?.setSessionTags(sessionId, ['qqbot:fish:group:123456'])
 |---|---|
 | `auto`（默认） | 检测到聊天桥接插件时按 `isolated` 处理，否则按 `owner` |
 | `owner` | 使用私有的 owner 作用域。只在没有其他人能接触这个 agent 时使用 |
-| `isolated` | 每个会话一个独立作用域 `session-<哈希>`（子 agent 用父会话的），看不到主人的记忆，也看不到其他会话的记忆 |
+| `isolated` | 每个会话一个独立作用域 `session-<哈希>`（子 agent 用其委派链最上层会话的），看不到主人的记忆，也看不到其他会话的记忆 |
 
 无法识别的取值按 `isolated` 处理。识别的桥接插件（按包名）：`dsh-qq-bridge`、`dsh-qqbot`、`dsh-qq-rooms`、`dsh-onebot-qq`、`dsh-wechat`。
 
@@ -380,7 +388,7 @@ ctx.get('memoryCloud')?.setSessionTags(sessionId, ['qqbot:fish:group:123456'])
 
 **修改规则或标签之后**：
 - 注入和回忆每一步都重新判断作用域，立即生效；
-- 捕获在下一轮对话开始时、以及会话标签改变时重新判断；作用域变了，就把当前片段封存在原作用域，之后的记录写入新作用域；
+- 捕获在下一轮对话开始时、会话标签改变时，以及会话切换 agent 预设时（`agent-preset/selected`）重新判断；作用域变了，就把当前片段封存在原作用域，之后的记录写入新作用域；
 - 已经注入到上下文里的 owner 记忆块会留到下一次压缩（插件会记一条警告）。如果这个会话不能再看到主人的记忆，请新开一个会话。
 
 ## 工具与命令
@@ -391,11 +399,11 @@ ctx.get('memoryCloud')?.setSessionTags(sessionId, ['qqbot:fish:group:123456'])
 
 | 工具 | 参数 | 作用 |
 |---|---|---|
-| `memory_search` | `query`，`from` / `to`（`YYYY-MM-DD`、`YYYY-MM`、`YYYY` 或 ISO 时间），`limit`（默认 8，最多 50），`includeRaw` | 中英文关键词、人名、日期搜索（中文二元组 + BM25 式打分），返回真实命中总数和 `#id 日期 总结`；`includeRaw` 会额外扫描原文（有上限） |
+| `memory_search` | `query`，`from` / `to`（`YYYY-MM-DD`、`YYYY-MM` 或 `YYYY`，分隔符可用 `-`、`/` 或 `.`；或严格的 ISO 日期时间 `YYYY-MM-DDTHH:mm[:ss[.sss]][Z\|±hh:mm]`，`T` 可写成空格，不带时区按本地时间；其他写法直接报错），`limit`（默认 8，最多 50），`includeRaw` | 中英文关键词、人名、日期搜索（中文二元组 + BM25 式打分），返回真实命中总数和 `#id 日期 总结`；`includeRaw` 会额外扫描原文（有上限） |
 | `memory_read` | `id`，`level`：`summary`（默认）\| `gist` \| `raw`，`offset` / `limit`（原文分页，默认 40，最多 200），`includeSystem` | 读一个片段的摘要、总结或原文。原文默认隐藏系统记录，只含对话（用户 / 助手消息、工具调用与结果），隐藏的条数在结果的 `hiddenRecords` 中报告；`includeSystem: true` 才显示运行时提醒、压缩检查点、注入的记忆块和日志事件，此时偏移量按全部记录计算，翻页时要保持同一取值 |
 | `memory_timeline` | `id`，`before` / `after`（默认 3，最多 20） | 查看前后片段的带日期总结 |
 | `memory_pin` / `memory_unpin` | `id` | 置顶 / 取消置顶 |
-| `memory_hide` / `memory_unhide` | `id` | 从记忆块和搜索中隐藏 / 恢复，不删除任何东西 |
+| `memory_hide` / `memory_unhide` | `id` | 从记忆块和搜索中隐藏 / 恢复，不删除任何东西；包含隐藏片段的时期总结也不再注入（见[时期总结](#时期总结rollup)） |
 
 单次回忆的输出上限是档位的"单次回忆上限"，并随上下文压力收紧：
 - 超过 60%：上限减半；
@@ -412,7 +420,7 @@ ctx.get('memoryCloud')?.setSessionTags(sessionId, ['qqbot:fish:group:123456'])
 | `/memory level <1-5>` | 切换档位，立即生效 |
 | `/memory mode <auto\|engine\|assist\|off>` | 切换模式 |
 | `/memory compact-now` | 立即用当前会话的压缩引擎整理上下文 |
-| `/memory summarize-now` | 封存当前尾部，并立即处理后台总结队列（包括重试已用完次数的失败片段） |
+| `/memory summarize-now` | 封存当前尾部，并立即处理后台总结队列，包括重试已用完次数的失败片段和已放弃的时期总结；空片段跳过，其他 DSH 进程正在运行的任务不受影响 |
 | `/memory rebuild` | 按当前档位的长度重新总结本作用域的全部片段（受每日配额限制；新结果写入前继续用旧文本） |
 | `/memory takeover [preset]` | 接管压缩（默认 `standard` 预设；headless 下切换宿主级引擎行） |
 | `/memory restore [preset]` | 还原宿主默认压缩 |
@@ -423,7 +431,7 @@ ctx.get('memoryCloud')?.setSessionTags(sessionId, ['qqbot:fish:group:123456'])
 
 ```
 <storageRoot，默认 $DSH_HOME/memory-cloud>/
-  state.json                 每个会话的捕获水位、后台任务队列、每日配额
+  state.json                 每个会话的捕获水位、后台任务队列、每日配额、已放弃的时期总结（exhaustedRollups）
   takeover.json              预设接管记录（按 DSH profile）
   logs/summarizer.jsonl      每次总结调用的结果、用量和错误（只追加）
   scopes/<scope>/            owner、qq-group-123456、session-<哈希> …
@@ -454,10 +462,15 @@ ctx.get('memoryCloud')?.setSessionTags(sessionId, ['qqbot:fish:group:123456'])
   ```
 
 **多个 DSH 进程共用一个存储**（例如 Web 和 Desktop 使用同一个 `DSH_HOME`）：
-- 写 `index.json`（每个作用域一把）和 `state.json` 前都先拿跨进程文件锁，最多等 10 秒；写锁时被中断留下的残缺锁文件，5 秒后自动清理；
-- 每个打开的片段在 index 中记录打开它的进程（PID 和进程启动时间），封存时清除。启动时的过期片段清扫只封存超过 `idleMinutes` 的片段，并跳过仍在运行的其他进程的片段；
+- 写 `index.json`（每个作用域一把）和 `state.json` 前都先拿跨进程文件锁，最多等 10 秒。超过 5 秒没有变化的锁文件，以下情况由插件清除：
+  - 写锁时被中断留下的残缺锁文件；
+  - 记着本进程 PID、但写于本进程启动之前的锁（之前用过同一 PID 的进程留下的）；
+  - 系统上次启动之前留下的锁，并且它的 PID 现在被某个存活进程复用。
+
+  其他情况（例如锁里的 PID 已经退出）交给 DSH 自己的锁接管处理；
+- 每个打开的片段在 index 中记录打开或接管它的进程（PID 和进程启动时间），封存时清除。过期片段清扫在启动时运行，之后最多每 5 分钟运行一次；它只封存超过 `idleMinutes` 的片段，并跳过仍在运行的其他进程的片段。如果记录的 PID 现在属于一个比原进程晚 5 分钟以上启动的进程，就视为原进程已退出（PID 被复用）。这项检查用 `ps` 读取进程启动时间；在 Windows 等取不到启动时间的环境中不做，沿用旧规则：PID 仍存活就视为原进程；
 - 另一个进程已经封存的片段不能再追加：追加会被拒绝（`EpisodeNotOpenError`），捕获从已封存的区间之后接着写入一个新片段；
-- 后台任务队列和每日配额保存在 `state.json` 中，各进程共享。领取任务时加租约（任务超时 5 分钟再加 60 秒），其他进程会跳过租约中的任务；被推迟或取消的任务退还配额。
+- 后台任务队列和每日配额保存在 `state.json` 中，各进程共享。领取任务时加租约（任务超时 5 分钟再加 60 秒），其他进程会跳过租约中的任务，`/memory summarize-now` 和 `/memory rebuild` 的强制执行也不例外；被推迟或取消的任务退还配额。
 
 - **原文是完整的对话记录**：包括工具结果和（默认）推理内容。备份到远程时请使用私有仓库。
 
@@ -499,7 +512,7 @@ ctx.get('memoryCloud')?.setSessionTags(sessionId, ['qqbot:fish:group:123456'])
   - `auto` 检测到桥接后，你自己的未匹配会话也会被隔离，直到你加上映射到 owner 的规则。
 - **多进程**：Web 和 Desktop 共用一个 `DSH_HOME` 时的锁、片段归属和任务租约只有单元测试覆盖（包括跨进程锁），端到端测试没有同时运行两个 DSH 进程。
 - **其他没有在真实环境中验证的部分**：
-  - 用打包好的 tarball 安装（端到端测试用的是 `link:` 安装）；
+  - 用打包好的 tarball 或 `github:` 地址安装（端到端测试用的是 `link:` 安装）；
   - DSH 升级后自动重新应用接管；
   - 通过界面输入斜杠命令（命令只在宿主侧用 `ctx.commands.execute` 测过）；
   - `standard` 以外的预设接管。
@@ -528,6 +541,7 @@ node scripts/e2e/run-e2e.mjs --only s1,s2 --skip-build --dsh-dir /path/with/node
 覆盖的场景包括：headless 接管与压缩、新会话注入与回忆、切换档位、总结失败回退、辅助模式、Web 预设接管、关闭进程。详见 [`scripts/e2e/README.md`](scripts/e2e/README.md)。
 
 更多文档：
+- 更新日志：[`CHANGELOG.md`](CHANGELOG.md)
 - 设计：[`docs/superpowers/specs/2026-11-23-memory-cloud-design.md`](docs/superpowers/specs/2026-11-23-memory-cloud-design.md)
 - 已核实的 DSH 事实：[`docs/dsh-api-notes.md`](docs/dsh-api-notes.md)
 - 宿主 API（`ctx.memoryCloud`）：[`docs/host-api.md`](docs/host-api.md)

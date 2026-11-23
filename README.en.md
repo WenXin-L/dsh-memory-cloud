@@ -11,7 +11,7 @@ Brain-like layered long-term memory for [DeepSeek Harness](https://github.com/de
 - **Doubles as the compaction engine**: once it takes over, DSH's compaction checkpoint *is* the memory block, and the replaced span is sealed as an episode at the same time.
 - **Adjustable compression**: five levels that you can switch at any time; changes apply live.
 
-> Status: pre-release (`0.0.0`), not yet on npm. It has been tested end-to-end only on DSH `0.2.2-rc.5` with a fake model. See [Limitations and what is not verified](#limitations-and-what-is-not-verified).
+> Version: `0.1.0`, the first public pre-release; see the [changelog](CHANGELOG.md) (in Chinese). It is not on npm yet, and DSH itself is still a developer preview. It has been tested end-to-end only on DSH `0.2.2-rc.5` with a fake model. See [Limitations and what is not verified](#limitations-and-what-is-not-verified).
 
 ## Contents
 
@@ -58,7 +58,7 @@ The unit of memory is the **episode**, not the DSH session, because a companion'
 - a compaction replaces it;
 - the session has been idle for `idleMinutes` (default 30);
 - the session is disposed;
-- its raw text exceeds `maxEpisodeTokens` (default 32768).
+- its raw text exceeds `maxEpisodeTokens` (default 32768; 0 turns size-based sealing off).
 
 A sealed episode is summarized in the background (prompt version `memory-cloud-summary/2`):
 - the summary keeps names, dates, numbers, preferences, negations, state changes and either side's promises, in sections "what happened / promises and to-dos / key facts / emotions and relationship" (empty sections are left out);
@@ -102,7 +102,7 @@ In engine mode, the plugin falls back to `compaction-basic`'s default summary wh
 ### Idle consolidation ("sleep")
 
 When an agent has been idle for 20 s (any status change restarts the wait) and its context pressure is above `idleCompactRatio` (default 0.5), the plugin calls that agent's compaction engine's `compactNow()`. This moves compaction to a moment when nobody is waiting. Conditions:
-- at most one attempt per agent every two minutes;
+- at most one attempt per agent every two minutes, and none within two minutes after any compaction finished;
 - skipped when the compactable span is too short;
 - never for subagents or in `off` mode.
 
@@ -121,7 +121,7 @@ T = 0.5^(Δt / (h·S)) × (0.5 + I/20)
 - S: 1 + the number of recalls;
 - I: importance (1–10).
 
-Low scores slide from summary to gist, then into a rollup or out of the block. Reading an episode with `memory_read` (its summary, or raw records) adds 1 to S and refreshes the recall time, so the episode "warms up" in the next block. Forgetting only changes the injected tier; **no file is ever deleted**. `memory_pin` keeps an episode prominent, and `memory_hide` removes it from view (reversibly).
+Low scores slide from summary to gist, then into a rollup or out of the block. Reading an episode with `memory_read` (its summary, or raw records from the first page; later pages do not count again) adds 1 to S and refreshes the recall time, so the episode "warms up" in the next block. Forgetting only changes the injected tier; **no file is ever deleted**. `memory_pin` keeps an episode prominent, and `memory_hide` removes it from view (reversibly).
 
 ### Rollups
 
@@ -129,11 +129,11 @@ When the distant tier (gists plus rollups) exceeds its quota, a background job m
 1. finished ISO weeks older than 7 days into week rollups (`rollups/2026-W47.md`);
 2. months where at least two weeks have rollups into month rollups (`rollups/2026-11.md`).
 
-Pinned, hidden and last-7-days episodes are never merged. Rollups are never generated on the compaction path; compaction only reads the ones that already exist.
+Pinned, hidden and last-7-days episodes are never merged. When an episode is hidden after it was merged, the rollup that contains it and every month or year rollup built on top of it are no longer injected; the episodes in it that are still visible are packed one by one as usual instead. Rollups are never generated on the compaction path; compaction only reads the ones that already exist.
 
 Background job limits:
 - 5-minute timeout per attempt;
-- exponential backoff from 30 s up to 30 min, at most 8 attempts;
+- exponential backoff from 30 s up to 30 min, at most 8 attempts. After that, an episode is left failed and a rollup is recorded as given up (`exhaustedRollups` in `state.json`); neither is re-queued automatically, and `/memory summarize-now` retries them;
 - a circuit breaker for 30 min after 5 consecutive failures;
 - a daily quota of 200 jobs.
 
@@ -146,16 +146,24 @@ Background job limits:
 
 ### Web / headless profiles (CLI)
 
-Once it is published:
+The package is **not published to npm yet**. Once it is, install it by name:
 
 ```sh
 dsh plugin --profile web add dsh-memory-cloud-brain
 ```
 
-Until then, install from a local checkout. pnpm links it with `link:`, which is how the E2E harness installs it:
+Until then, install it straight from GitHub (this path has not been run end-to-end yet):
 
 ```sh
-git clone <this repo> dsh-memory-cloud-brain
+dsh plugin --profile web add github:WenXin-L/dsh-memory-cloud
+```
+
+The repository has no built `lib/`, so pnpm runs the package's `prepare` script (`tsdown`) on the fetched source and installs the result. Since pnpm 10.26, a git dependency's `prepare` is blocked by default, so the first install can stop with `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`. If it does, set the key that pnpm's error prints to `true` under `allowBuilds` in the profile's `pnpm-workspace.yaml` (`$DSH_HOME/profiles/<profile>/pnpm-workspace.yaml`), then run the same command again. Copy the key from the error output: for git dependencies, pnpm 11 ignores a key that is only the package name.
+
+You can also install from a local checkout. pnpm links it with `link:`, which is how the E2E harness installs it:
+
+```sh
+git clone https://github.com/WenXin-L/dsh-memory-cloud.git dsh-memory-cloud-brain
 cd dsh-memory-cloud-brain
 pnpm install
 pnpm build
@@ -165,15 +173,15 @@ dsh plugin --profile web add "$PWD"
 Or pack a tarball and install that (this path has not been run end-to-end yet):
 
 ```sh
-npm pack                     # writes dsh-memory-cloud-brain-0.0.0.tgz
-dsh plugin --profile web add ./dsh-memory-cloud-brain-0.0.0.tgz
+npm pack                     # writes dsh-memory-cloud-brain-0.1.0.tgz
+dsh plugin --profile web add ./dsh-memory-cloud-brain-0.1.0.tgz
 ```
 
 For headless and SDK hosts, use their profile instead of `web`, e.g. `--profile headless`. See [below](#headless--sdk) for enabling engine mode there.
 
 ### Desktop
 
-In the Desktop app open **Plugins → Add plugin**, enter `dsh-memory-cloud-brain` (once published) or the tarball path, then enable it. Desktop manages its own profile. The plugin has not been tested on Desktop yet.
+In the Desktop app open **Plugins → Add plugin**, enter `dsh-memory-cloud-brain` (once published), `github:WenXin-L/dsh-memory-cloud` or the tarball's absolute path, then enable it. Desktop manages its own profile. The plugin has not been tested on Desktop yet.
 
 ### Restart notes
 
@@ -235,7 +243,7 @@ The plugin's page on the Plugins page has these sections:
 - **Advanced** (collapsed; loaded the first time it is opened), with every other live field:
   - background summaries: `summarizer.provider` / `model` / `reasoningEffort`;
   - capture and forgetting: `idleMinutes`, `idleCompactRatio`, `halfLifeDays`, `maxEpisodeTokens`, `captureReasoning`;
-  - level overrides: `overrides.*`; an empty field uses the level default, which the input shows;
+  - level overrides: `overrides.*`; an empty field keeps the level's own value. The input's placeholder shows the value resolved for the active session's model when it is known, and the level's preset ceiling otherwise. An override skips the "never more than the level below" cap (see [Compression levels](#compression-levels-default-3)), so typing the ceiling can give more than leaving the field empty;
   - scope rules: add, remove and reorder `scopeRules`, plus [sessions no rule matches](#sessions-no-rule-matches-unmatchedsessions) (`unmatchedSessions`).
 
 Advanced checks number ranges, and that no `$n` exceeds the pattern's wildcard count, in the browser. The host checks the result against the config schema again before writing and writes nothing if it fails. **Discard changes** resets the form; **Restore defaults** only fills in the shipped values, and nothing is written until you save.
@@ -299,7 +307,7 @@ Every field below except `storageRoot` can be changed in the settings page's Adv
 | `idleMinutes` | `30` | Idle time before the open tail is sealed as an episode |
 | `idleCompactRatio` | `0.5` | Context pressure above which an idle agent is compacted with `compactNow()` |
 | `halfLifeDays` | `14` | Forgetting half-life in days |
-| `maxEpisodeTokens` | `32768` | Seal an episode once its raw text exceeds this |
+| `maxEpisodeTokens` | `32768` | Seal an episode once its raw text exceeds this; `0` disables size-based sealing |
 | `captureReasoning` | `true` | Keep model reasoning in the raw archive |
 | `summarizer.provider` | empty | Provider for background summaries; empty uses the default model's provider |
 | `summarizer.model` | `deepseek-flash` | Model for background summaries; falls back to the default model (with a warning) if it cannot be resolved |
@@ -344,7 +352,7 @@ Example (QQ):
         scope: "qq-user-$2"
 ```
 
-Every session also carries the tags `preset:<preset>`, `cwd:<working dir>` and `session:<session id>`, which rules can use too (e.g. `cwd:/home/me/qq-rooms/*`). Subagents inherit their parent's tags.
+Every session also carries the tags `preset:<preset>`, `cwd:<working dir>` and `session:<session id>`, which rules can use too (e.g. `cwd:/home/me/qq-rooms/*`). A subagent is not resolved by its own tags: it follows `parentSession` up to the root session of its delegation chain and gets that session's decision.
 
 DSH session headers have no tag field. A chat bridge (or your integration code) should supply tags when a session is created:
 
@@ -358,7 +366,7 @@ ctx.get('memoryCloud')?.setSessionTags(sessionId, ['qqbot:fish:group:123456'])
 |---|---|
 | `auto` (default) | `isolated` while a chat-bridge plugin is detected, `owner` otherwise |
 | `owner` | The private owner scope. Use it only when nobody else can reach this agent |
-| `isolated` | Each session gets its own scope `session-<hash>` (subagents use their parent's), without the owner's memory or any other session's |
+| `isolated` | Each session gets its own scope `session-<hash>` (subagents share the scope of their delegation chain's root session), without the owner's memory or any other session's |
 
 An unrecognized value is treated as `isolated`. Bridges recognized by package name: `dsh-qq-bridge`, `dsh-qqbot`, `dsh-qq-rooms`, `dsh-onebot-qq`, `dsh-wechat`.
 
@@ -380,7 +388,7 @@ An unrecognized value is treated as `isolated`. Bridges recognized by package na
 
 **After changing rules or tags**:
 - injection and recall resolve the scope again on every step, so they follow at once;
-- capture resolves it again at the start of the next turn and whenever the session's tags change; if the scope changed, the open episode is sealed in the old scope and later records go to the new one;
+- capture resolves it again at the start of the next turn, whenever the session's tags change, and when the session switches agent preset (`agent-preset/selected`); if the scope changed, the open episode is sealed in the old scope and later records go to the new one;
 - an owner memory block that was already injected stays in the context until the next compaction (the plugin logs a warning). If the session must no longer see owner memory, start a new session.
 
 ## Tools and commands
@@ -391,11 +399,11 @@ All tools only see the current session's scope and go through the same `canReadS
 
 | Tool | Parameters | What it does |
 |---|---|---|
-| `memory_search` | `query`, `from` / `to` (`YYYY-MM-DD`, `YYYY-MM`, `YYYY` or an ISO date-time), `limit` (default 8, max 50), `includeRaw` | Searches Chinese and English words, names and dates (Chinese bigrams plus BM25-style scoring). Returns the true hit count and `#id date gist`. `includeRaw` also scans raw transcripts, with a bound |
+| `memory_search` | `query`, `from` / `to` (`YYYY-MM-DD`, `YYYY-MM` or `YYYY`, separated by `-`, `/` or `.`; or a strict ISO date-time `YYYY-MM-DDTHH:mm[:ss[.sss]][Z\|±hh:mm]`, with a space allowed for `T` and local time without an offset; anything else is rejected), `limit` (default 8, max 50), `includeRaw` | Searches Chinese and English words, names and dates (Chinese bigrams plus BM25-style scoring). Returns the true hit count and `#id date gist`. `includeRaw` also scans raw transcripts, with a bound |
 | `memory_read` | `id`, `level`: `summary` (default) \| `gist` \| `raw`, `offset` / `limit` (raw paging, default 40, max 200), `includeSystem` | Reads an episode's summary, gist or raw transcript. Raw hides system records by default and shows only the conversation (user and assistant messages, tool calls and results); the number of hidden records is reported as `hiddenRecords`. `includeSystem: true` shows runtime-context reminders, compaction checkpoints, injected memory blocks and log events too; offsets then count every stored record, so keep the same value while paging |
 | `memory_timeline` | `id`, `before` / `after` (default 3, max 20) | Dated gists of the neighbouring episodes |
 | `memory_pin` / `memory_unpin` | `id` | Pin / unpin |
-| `memory_hide` / `memory_unhide` | `id` | Hide from blocks and search / restore; nothing is deleted |
+| `memory_hide` / `memory_unhide` | `id` | Hide from blocks and search / restore; nothing is deleted. Rollups that contain a hidden episode are not injected either (see [Rollups](#rollups)) |
 
 One recall returns at most the level's single-recall limit, and the cap tightens with context pressure:
 - above 60%: the cap is halved;
@@ -412,7 +420,7 @@ A byte-stable usage section (in Chinese) in the system prompt gives the model th
 | `/memory level <1-5>` | Set the level; applies live |
 | `/memory mode <auto\|engine\|assist\|off>` | Set the mode |
 | `/memory compact-now` | Compact the current session now with its compaction engine |
-| `/memory summarize-now` | Seal the current tail and run the background summary queue now (including failed episodes that used up their retries) |
+| `/memory summarize-now` | Seal the current tail and run the background summary queue now, including failed episodes that used up their retries and rollups that were given up on; empty episodes are skipped, and jobs another DSH process is running are left alone |
 | `/memory rebuild` | Re-summarize every episode in this scope at the current level's lengths (subject to the daily quota; old text stays until the new one is written) |
 | `/memory takeover [preset]` | Take over compaction (the `standard` preset by default; the host-level engine row on headless) |
 | `/memory restore [preset]` | Restore DSH's default compaction |
@@ -423,7 +431,7 @@ A byte-stable usage section (in Chinese) in the system prompt gives the model th
 
 ```
 <storageRoot, default $DSH_HOME/memory-cloud>/
-  state.json                 per-session capture watermarks, background job queue, daily quota
+  state.json                 per-session capture watermarks, background job queue, daily quota, given-up rollups (exhaustedRollups)
   takeover.json              preset takeover records (per DSH profile)
   logs/summarizer.jsonl      result, usage and errors of every summarizer call (append-only)
   scopes/<scope>/            owner, qq-group-123456, session-<hash>, …
@@ -454,10 +462,15 @@ A byte-stable usage section (in Chinese) in the system prompt gives the model th
   ```
 
 **Several DSH processes on one store** (e.g. Web and Desktop sharing a `DSH_HOME`):
-- writers take a cross-process file lock on `index.json` (one per scope) and on `state.json`, waiting at most 10 s; a torn lock file left by a writer that died mid-write is cleared after 5 s;
-- every open episode records the process that opened it (PID and process start time) in the index until it is sealed. The stale-episode sweep at startup only seals episodes older than `idleMinutes`, and skips those owned by another process that is still running;
+- writers take a cross-process file lock on `index.json` (one per scope) and on `state.json`, waiting at most 10 s. The plugin clears a lock file that has not changed for 5 s in these cases:
+  - a torn lock file left by a writer that died mid-write;
+  - a lock naming this process's own PID that was written before this process started (left by an earlier process with the same PID);
+  - a lock left from before the last system boot, only if a live process has since reused its PID.
+
+  Anything else (for example a lock whose PID has exited) is left to DSH's own lock takeover;
+- every open episode records the process that opened or adopted it (PID and process start time) in the index until it is sealed. The stale-episode sweep runs at startup and then at most every 5 minutes; it only seals episodes older than `idleMinutes`, and skips those owned by another process that is still running. A recorded PID now held by a process that started more than 5 minutes after the owner counts as exited (a reused PID). This check reads process start times with `ps`; where they cannot be read, as on Windows, it is skipped and the old rule applies: a live PID counts as the owner;
 - an episode another process has sealed cannot be appended to: the append is refused (`EpisodeNotOpenError`), and capture continues after the sealed range in a new episode;
-- the background job queue and the daily quota live in `state.json` and are shared. A claimed job is leased (the 5-minute job timeout plus 60 s), so other processes skip it; deferred or cancelled jobs refund their quota.
+- the background job queue and the daily quota live in `state.json` and are shared. A claimed job is leased (the 5-minute job timeout plus 60 s), so other processes skip it, even when `/memory summarize-now` or `/memory rebuild` forces the queue; deferred or cancelled jobs refund their quota.
 
 - **The raw archive is the full conversation**, including tool results and (by default) reasoning. Use a private remote.
 
@@ -499,7 +512,7 @@ A byte-stable usage section (in Chinese) in the system prompt gives the model th
   - once `auto` detects a bridge, your own unmatched sessions are isolated as well until you add a rule that maps them to owner.
 - **Several processes**: locking, episode ownership and job leases for Web and Desktop sharing one `DSH_HOME` are covered by unit tests only (cross-process locking included); the E2E harness never runs two DSH processes at once.
 - **Other things not verified in a real setup**:
-  - installing from a packed tarball (the E2E harness uses a `link:` install);
+  - installing from a packed tarball or a `github:` spec (the E2E harness uses a `link:` install);
   - re-applying the takeover after a real DSH upgrade;
   - slash commands typed in a UI (commands were only run host-side through `ctx.commands.execute`);
   - taking over presets other than `standard`.
@@ -528,6 +541,7 @@ node scripts/e2e/run-e2e.mjs --only s1,s2 --skip-build --dsh-dir /path/with/node
 The scenarios cover headless takeover and compaction, new-session injection and recall, level changes, summarizer-failure fallback, assist mode, Web preset takeover and shutdown. See [`scripts/e2e/README.md`](scripts/e2e/README.md).
 
 More documentation:
+- changelog (Chinese): [`CHANGELOG.md`](CHANGELOG.md)
 - design (Chinese): [`docs/superpowers/specs/2026-11-23-memory-cloud-design.md`](docs/superpowers/specs/2026-11-23-memory-cloud-design.md)
 - verified DSH facts: [`docs/dsh-api-notes.md`](docs/dsh-api-notes.md)
 - host API (`ctx.memoryCloud`): [`docs/host-api.md`](docs/host-api.md)
