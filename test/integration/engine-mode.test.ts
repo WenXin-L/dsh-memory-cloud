@@ -30,6 +30,7 @@ describe('engine mode', () => {
     expect(h.runtime.modes.modeFor(conversation.agent)).toMatchObject({ mode: 'engine', engineActive: true })
     expect((await h.runtime.store.readIndex(OWNER_SCOPE)).episodes).toMatchObject([{ status: 'open', sessionId: 'sess-engine-1' }])
 
+    await h.tool('memory_note', { action: 'add', text: '用户习惯摄氏度。' }, conversation.agent)
     const result = await h.compaction!.compactNow(conversation.agent, new AbortController().signal)
 
     expect(result).not.toBeNull()
@@ -37,6 +38,7 @@ describe('engine mode', () => {
     expect(others).toEqual([])
     expect(checkpoint).toContain('<compacted-summary>')
     expect(checkpoint).toContain('<memory-cloud>')
+    expect(checkpoint).toContain('用户习惯摄氏度。')
     expect(checkpoint).toContain('楼外楼的醋鱼')
     expect(checkpoint).toContain('周五提醒用户带伞')
     expect(h.adapter.calls).toHaveLength(1)

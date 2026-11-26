@@ -7,12 +7,13 @@ import ToolsService, {
   assertObjectJsonSchema, assertSupportedJsonSchema, defineTool, ToolArgsError, validateJsonSchemaValue,
 } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { ScopeDecision, ScopeId } from '../../src/contracts.ts'
 import {
   COMPACT_CHECKPOINT_SOURCE_KIND, MEMORY_SOURCE_KIND, OWNER_SCOPE, RUNTIME_CONTEXT_SOURCE_KIND, SYNTHETIC_SOURCE_KINDS,
 } from '../../src/contracts.ts'
 import { EMPTY_EPISODE_ERROR } from '../../src/runtime/sources.ts'
+import { createProfileNotes, type ProfileNoteResult } from '../../src/store/profile-notes.ts'
 import { createMemorySearch, createMemoryTools, MEMORY_TOOL_NAMES, recallPolicy, registerMemoryTools } from '../../src/tools/index.ts'
 import type { FlagOutput, MemoryToolCaller, MemoryToolDeps, ReadOutput, SearchOutput, TimelineOutput } from '../../src/tools/index.ts'
 import { assistantRecord, at, estimator, eventRecord, stepRecord, toolResultRecord, userRecord, withTempStore } from './helpers.ts'
@@ -89,13 +90,16 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
     await store.seed(owner, ownerCorpus)
     await store.seed(group, [{ id: GROUP_CAT, sessionId: 's-g', startedAt: at(2026, 11, 21, 12), gist: '群里拼单买猫粮。', summary: '群友拼单买猫粮。', keywords: ['猫粮'] }])
     const state: Harness['state'] = { pressure: 0, limit: 8192, decision: ownerDecision, scopeError: undefined }
+    const notes = createProfileNotes(store.root)
+    vi.spyOn(notes, 'apply')
     const deps: MemoryToolDeps = {
       store,
+      notes,
       search: createMemorySearch({ store, estimator }),
-      scopeFor: () => {
+      scopeFor: vi.fn(() => {
         if (state.scopeError !== undefined) throw state.scopeError
         return state.decision
-      },
+      }),
       pressure: () => state.pressure,
       recallLimitTokens: () => state.limit,
       estimator,
@@ -136,6 +140,12 @@ describe('tool definitions', () => {
       const dispose = registerMemoryTools({ tools: service }, deps)
       expect(service.definitions().map(definition => definition.name).sort()).toEqual([...names].sort())
       expect(service.schemas().find(schema => schema.name === MEMORY_TOOL_NAMES.read)?.parameters).toMatchObject({ required: ['id'] })
+      const noteSchema = service.schemas().find(schema => schema.name === 'memory_note')?.parameters
+      expect(noteSchema?.required).toEqual(['action'])
+      expect(noteSchema?.properties).toEqual({
+        action: expect.objectContaining({ type: 'string', enum: ['list', 'add', 'replace', 'remove'] }),
+        text: expect.objectContaining({ type: 'string' }), oldText: expect.objectContaining({ type: 'string' }),
+      })
       expect(() => registerMemoryTools({ tools: service }, deps)).toThrow(/already registered/)
       expect(service.definitions()).toHaveLength(names.length)
       dispose()
@@ -351,6 +361,124 @@ describe('memory_read', () => {
       expect(value.notice).toBe('This episode has no conversation records; includeSystem: true shows its 2 system records.')
       expect(text).toContain('[no records from 0 of 0; end; 2 system records hidden]')
       expect(store.calls.updateEpisode).toEqual([])
+    })
+  })
+})
+
+describe('memory_note', () => {
+  const original = 'Keep API names in English.'
+  const corrected = 'Keep API and CLI names in English.'
+  const requests = [
+    { action: 'list' },
+    { action: 'add', text: original },
+    { action: 'replace', oldText: original, text: corrected },
+    { action: 'remove', oldText: corrected },
+  ] as const
+
+  it('resolves scope once and shows the full profile only on list', async () => {
+    await withHarness(async ({ call, deps }) => {
+      const entriesAfter = [[], [original], [corrected], []]
+      for (const [index, request] of requests.entries()) {
+        const entries = entriesAfter[index]!
+        const apply = vi.mocked(deps.notes.apply).mockClear()
+        const resolve = vi.mocked(deps.scopeFor).mockClear()
+        const { value, text } = await call<ProfileNoteResult>(MEMORY_TOOL_NAMES.note, request)
+        expect(resolve.mock.calls).toEqual([[agent]])
+        expect(apply.mock.calls).toEqual([[request]])
+        expect(value).toMatchObject({ usedChars: entries.join('\n').length, changed: request.action !== 'list' })
+        expect(value.limitChars).toBeGreaterThan(0)
+        expect(text).toContain(`${value.usedChars}/${value.limitChars} characters`)
+        if (request.action === 'list') {
+          expect(value.entries).toEqual([])
+          expect(text).toContain('No entries.')
+        } else {
+          expect(value).not.toHaveProperty('entries')
+          expect(text).toContain('updated')
+          expect(text).not.toContain('English')
+        }
+      }
+    })
+  })
+
+  it('requires the entire old entry for replace and remove', async () => {
+    await withHarness(async ({ call }) => {
+      await call(MEMORY_TOOL_NAMES.note, { action: 'add', text: original })
+      for (const request of [
+        { action: 'replace', oldText: 'API names', text: corrected },
+        { action: 'remove', oldText: ` ${original}` },
+      ]) {
+        await expect(call(MEMORY_TOOL_NAMES.note, request)).rejects.toThrow(/exact/i)
+      }
+      const listed = await call<ProfileNoteResult>(MEMORY_TOOL_NAMES.note, { action: 'list' })
+      expect(listed.value.entries).toEqual([original])
+      expect(listed.text).toContain(`- ${original}`)
+    })
+  })
+
+  it('reports malformed arguments before touching notes', async () => {
+    await withHarness(async ({ call, deps }) => {
+      for (const args of [{}, { action: 'clear' }, { action: 'add', text: 42 }]) {
+        await expect(call(MEMORY_TOOL_NAMES.note, args)).rejects.toBeInstanceOf(ToolArgsError)
+      }
+      for (const args of [
+        { action: 'list', text: 'extra' }, { action: 'list', scope: 'owner' },
+        { action: 'add' }, { action: 'add', text: '   ' }, { action: 'add', oldText: original, text: corrected },
+        { action: 'replace', text: corrected }, { action: 'replace', oldText: original },
+        { action: 'remove', text: original }, { action: 'remove', oldText: original, text: corrected },
+      ]) {
+        await expect(call(MEMORY_TOOL_NAMES.note, args)).rejects.toMatchObject({ code: 'MEMORY_INVALID_ARGS' })
+      }
+      expect(deps.notes.apply).not.toHaveBeenCalled()
+    })
+  })
+
+  it('keeps owner notes inaccessible for every action outside a private owner session', async () => {
+    await withHarness(async ({ call, state, deps }) => {
+      for (const decision of [
+        { ...ownerDecision, private: false },
+        { ...ownerDecision, scope: group, private: false },
+        { ...ownerDecision, scope: 'session-isolated' as ScopeId, private: false },
+        { ...ownerDecision, scope: group, private: true },
+      ]) {
+        state.decision = decision
+        for (const request of requests) {
+          const resolve = vi.mocked(deps.scopeFor).mockClear()
+          await expect(call(MEMORY_TOOL_NAMES.note, request)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_DENIED' })
+          expect(resolve.mock.calls).toEqual([[agent]])
+        }
+      }
+      expect(deps.notes.apply).not.toHaveBeenCalled()
+    })
+  })
+
+  it('allows a private owner to list notes with capture disabled and blocks every mutation', async () => {
+    await withHarness(async ({ call, state, deps }) => {
+      await call(MEMORY_TOOL_NAMES.note, { action: 'add', text: original })
+      state.decision = { ...ownerDecision, capture: false }
+      const apply = vi.mocked(deps.notes.apply).mockClear()
+      vi.mocked(deps.scopeFor).mockClear()
+      const [list, ...mutations] = requests
+      const listed = await call<ProfileNoteResult>(MEMORY_TOOL_NAMES.note, list)
+      expect(listed.value).toMatchObject({ entries: [original], usedChars: original.length, changed: false })
+      for (const request of mutations) {
+        await expect(call(MEMORY_TOOL_NAMES.note, request)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_DENIED' })
+      }
+      expect(apply.mock.calls).toEqual([[list]])
+      expect(deps.scopeFor).toHaveBeenCalledTimes(requests.length)
+    })
+  })
+
+  it('fails closed when the caller or the scope decision is missing', async () => {
+    await withHarness(async ({ call, state, deps }) => {
+      state.scopeError = new Error('resolver failed')
+      for (const request of requests) {
+        const resolve = vi.mocked(deps.scopeFor).mockClear()
+        await expect(call(MEMORY_TOOL_NAMES.note, request, null)).rejects.toMatchObject({ code: 'MEMORY_NO_AGENT' })
+        expect(resolve).not.toHaveBeenCalled()
+        await expect(call(MEMORY_TOOL_NAMES.note, request)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_UNAVAILABLE' })
+        expect(resolve.mock.calls).toEqual([[agent]])
+      }
+      expect(deps.notes.apply).not.toHaveBeenCalled()
     })
   })
 })

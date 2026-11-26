@@ -4,6 +4,10 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 尚未发布
+
+- 私有主人会话可通过 `memory_note` 查看、新增、更正和移除跨会话偏好。条目单独保存，在下一次生成记忆块时按原有档案配额注入。
+
 ## [0.1.0] - 2026-11-24
 
 首个公开预发布版本。DeepSeek Harness（DSH）本身仍是开发者预览版；本插件要求 DSH `>=0.2.2-rc.5 <0.3.0-0`，只在 `0.2.2-rc.5` 上用假模型做过端到端测试，尚未发布到 npm。

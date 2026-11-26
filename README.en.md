@@ -27,6 +27,7 @@ If the plugin does not show up, restart DSH. In a **new session**, run `/memory 
 | Check whether the plugin is active | `/memory status` shows the mode, memory budget, scope, and background jobs. |
 | Adjust how much detail it keeps | Use `/memory level 1` through `/memory level 5`; the default is `3`. |
 | Use Memory Cloud for compaction | Choose **Take over compaction** in settings or run `/memory takeover`; use `/memory restore` to undo it. See the [takeover and restart notes](docs/reference.en.md#enabling-engine-mode-compaction-takeover). |
+| Remember a preference across sessions | In a private owner chat, say “Remember that I prefer temperatures in Celsius.” You can later ask to correct or remove that preference. |
 | Look up details from an earlier conversation | The model can use `memory_search` and `memory_read`. Archiving starts after the plugin is enabled; it does not backfill earlier sessions. |
 
 ## Before using it for real conversations

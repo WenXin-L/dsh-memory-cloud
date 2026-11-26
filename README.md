@@ -27,6 +27,7 @@ dsh plugin --profile web add "$PWD"
 | 确认插件是否生效 | `/memory status`：查看模式、记忆预算、作用域和后台任务。 |
 | 调整记忆压缩程度 | `/memory level 1` 到 `/memory level 5`，默认 `3`。 |
 | 用记忆云压缩上下文 | 在设置页选择「接管压缩」，或运行 `/memory takeover`；用 `/memory restore` 还原。[接管与重启说明](docs/reference.md#启用引擎模式接管压缩)。 |
+| 让偏好跨会话生效 | 在私有主人会话里说「记住，以后温度都用摄氏度」。以后也可以让模型改正或移除这条偏好。 |
 | 找回旧对话里的细节 | 模型可以调用 `memory_search` 和 `memory_read`。插件只归档启用后的会话，不会补录以前的会话。 |
 
 ## 装进日常环境前

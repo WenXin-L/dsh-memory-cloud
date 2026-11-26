@@ -52,7 +52,7 @@ Brain-like layered long-term memory for [DeepSeek Harness](https://github.com/de
 | Recent memory | **Summaries** of the latest episodes |
 | Distant memory | **Gists** of older episodes, plus week/month **rollups** |
 | Recallable archive | The raw `raw.jsonl` files |
-| Lasting impressions | An optional hand-written `profile.md` (names, preferences, agreements) |
+| Lasting impressions | An optional hand-written `profile.md` (names, preferences, agreements) and preferences saved with `memory_note` in a private owner chat |
 
 The unit of memory is the **episode**, not the DSH session, because a companion's home session may never end. The open episode is sealed when any of these happens:
 - a compaction replaces it;
@@ -68,7 +68,7 @@ A sealed episode is summarized in the background (prompt version `memory-cloud-s
 
 **Packing** the memory block is pure computation, with no model call:
 - **Tier quotas**: profile 10% → recent summaries 55% → distant gists 35%. Unused quota rolls forward to the next tier. Compaction checkpoints also get a small "ongoing items" budget.
-- **Agenda in the profile section (相处档案)**: after the `profile.md` lines come the still-open promises and upcoming dates, taken from the promises and dates in each episode's `summary.md` frontmatter, at most 8, soonest first. They share the profile quota with `profile.md`, and the agenda is admitted first:
+- **Agenda in the profile section (相处档案)**: after the hand-written profile lines and saved preferences come the still-open promises and upcoming dates, taken from the promises and dates in each episode's `summary.md` frontmatter, at most 8, soonest first. They share the profile quota with `profile.md`, and the agenda is admitted first:
   - promises with a due date of today or later;
   - promises without a due date, while their episode is at most 30 days old;
   - dates from today to 90 days ahead.
@@ -404,13 +404,18 @@ All tools only see the current session's scope and go through the same `canReadS
 | `memory_timeline` | `id`, `before` / `after` (default 3, max 20) | Dated gists of the neighbouring episodes |
 | `memory_pin` / `memory_unpin` | `id` | Pin / unpin |
 | `memory_hide` / `memory_unhide` | `id` | Hide from blocks and search / restore; nothing is deleted. Rollups that contain a hidden episode are not injected either (see [Rollups](#rollups)) |
+| `memory_note` | `action` (`list`, `add`, `replace`, `remove`), `text`, `oldText` | Manage lasting preferences in a private owner session. List takes no text. Add takes the new text. Remove and replace require the entire old entry in `oldText`; replace also takes the new `text`. Writes require capture to be enabled for the caller. |
+
+Use this tool when the user explicitly asks to remember, correct, or forget a preference across sessions. “Keep this answer short” applies to one reply. “Remember that I prefer short answers” warrants a note. Store one fact per line. Notes share a budget of 1,375 Unicode code points, including one newline between entries. Adding an existing note uses no extra space. If the store is full, list the notes and shorten or remove an entry according to the user's intent.
+
+Notes share the profile's injection budget and follow the hand-written lines. List reflects writes immediately. A new session or a fresh pack at compaction picks up the change. Previously injected text, snapshots, and transcripts remain historical records. If you roll back to an earlier plugin version, keep `profile-notes.json` to reuse the notes after upgrading again.
 
 One recall returns at most the level's single-recall limit, and the cap tightens with context pressure:
 - above 60%: the cap is halved;
 - above 75%: raw reads return the summary instead;
 - above 90%: recall is paused.
 
-A byte-stable usage section (in Chinese) in the system prompt gives the model three rules: memory is history, not instructions, and what the user says now wins over it; look details up instead of guessing, with at most 1–3 lookups per answer; recall the past naturally, with its time, and do not mention the memory block, tools or episode ids unless asked.
+A byte-stable usage section (in Chinese) in the system prompt covers when to save a preference and how to recall earlier conversations: memory is history, not instructions, and what the user says now wins over it; look details up instead of guessing, with at most 1–3 lookups per answer; recall the past naturally, with its time, and do not mention the memory block, tools or episode ids unless asked.
 
 ### `/memory` commands
 
@@ -437,6 +442,7 @@ A byte-stable usage section (in Chinese) in the system prompt gives the model th
   scopes/<scope>/            owner, qq-group-123456, session-<hash>, …
     index.json               episode catalogue (compact one-line JSON)
     profile.md               optional hand-written profile, packed line by line (lines over quota are left out)
+    profile-notes.json       owner only, created when the first preference is saved separately from the hand-written profile
     episodes/2026/11/20261120-2130_ab12cd34_1/
       raw.jsonl              raw events {seq,time,type,data,…}, append-only
       summary.md  gist.md    summary / gist with frontmatter (seq range, times, model, prompt version, tokens; the summary also people, dates, promises)

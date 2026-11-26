@@ -40,6 +40,7 @@ import {
 import type { CoexistenceReport, SessionLike } from '../scope/index.ts'
 import { createFileMemoryStore } from '../store/index.ts'
 import type { FileMemoryStore } from '../store/index.ts'
+import { createProfileNotes } from '../store/profile-notes.ts'
 import { createDshLlmClient } from '../summarize/index.ts'
 import { createJobRunner, DEFAULT_JOB_RUNNER_OPTIONS } from '../summarize/jobs/index.ts'
 import type { JobRunner } from '../summarize/jobs/index.ts'
@@ -303,7 +304,15 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
   })
 
   const packer = createMemoryPacker({ estimator })
-  const sources = createPackSourceLoader(store)
+  const notes = createProfileNotes(store.root)
+  const sources = createPackSourceLoader(store, async () => {
+    try {
+      return (await notes.apply({ action: 'list' })).entries
+    } catch {
+      logger.warn('Could not load owner profile-notes.json. Check its format and read permissions. Packing the hand-written profile and episodes.')
+      return []
+    }
+  })
   const capture = createCapture({
     store,
     estimator,
@@ -693,6 +702,7 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
   try {
     registerMemoryTools(ctx, {
       store,
+      notes,
       search: createMemorySearch({ store, estimator }),
       estimator,
       clock,

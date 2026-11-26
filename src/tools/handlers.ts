@@ -1,6 +1,7 @@
 import type { Clock, EpisodeId, EpisodeMeta, MemoryIndex, MemoryStore, RawEventRecord, ScopeDecision, ScopeId, TokenEstimator } from '../contracts.ts'
 import { isEmptyEpisode } from '../runtime/sources.ts'
-import { canReadScope } from '../scope/guard.ts'
+import { canReadScope, mayUseOwnerMemory } from '../scope/guard.ts'
+import type { ProfileNoteAction, ProfileNoteRequest, ProfileNoteResult, ProfileNotes } from '../store/profile-notes.ts'
 import { percent, recallPolicy } from './policy.ts'
 import type { RecallAllowance } from './policy.ts'
 import { isConversationRecord, renderRawRecord } from './raw.ts'
@@ -19,6 +20,7 @@ export interface ToolLogger {
  */
 export interface ToolDeps<A = unknown> {
   readonly store: MemoryStore
+  readonly notes: ProfileNotes
   readonly search: MemorySearch
   /** Scope of the agent's session; owner memory is readable only when `private` is true. */
   scopeFor(agent: A): ScopeDecision
@@ -78,6 +80,8 @@ export interface IdArgs {
   readonly id: string
 }
 
+type NoteOutput = Omit<ProfileNoteResult, 'entries'> & { readonly entries?: string[] }
+
 export interface MemoryToolHandlers<A> {
   search(agent: A | undefined, args: SearchArgs, signal?: AbortSignal): Promise<SearchOutput>
   read(agent: A | undefined, args: ReadArgs, signal?: AbortSignal): Promise<ReadOutput>
@@ -86,6 +90,7 @@ export interface MemoryToolHandlers<A> {
   unpin(agent: A | undefined, args: IdArgs): Promise<FlagOutput>
   hide(agent: A | undefined, args: IdArgs): Promise<FlagOutput>
   unhide(agent: A | undefined, args: IdArgs): Promise<FlagOutput>
+  note(agent: A | undefined, args: ProfileNoteRequest): Promise<NoteOutput>
 }
 
 /** One page of a raw read's view; `total` counts the view, `hidden` the episode records left out of it. */
@@ -103,6 +108,9 @@ const TIMELINE_DEFAULT_SPAN = 3
 const TIMELINE_MAX_SPAN = 20
 const TIMELINE_GIST_TOKENS = 80
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
+const NOTE_FIELDS: Record<ProfileNoteAction, readonly ('text' | 'oldText')[]> = {
+  list: [], add: ['text'], replace: ['oldText', 'text'], remove: ['oldText'],
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -152,14 +160,17 @@ export function createMemoryToolHandlers<A>(deps: ToolDeps<A>): MemoryToolHandle
     return agent
   }
 
-  function scopeOf(agent: A): ScopeId {
-    let decision: ScopeDecision
+  function resolveScope(agent: A): ScopeDecision {
     try {
-      decision = deps.scopeFor(agent)
+      return deps.scopeFor(agent)
     } catch (error) {
       warn('memory scope resolution failed: %s', errorText(error))
       throw new MemoryToolError('SCOPE_UNAVAILABLE', 'Memory is unavailable for this session.')
     }
+  }
+
+  function scopeOf(agent: A): ScopeId {
+    const decision = resolveScope(agent)
     if (!canReadScope(decision)) {
       throw new MemoryToolError('SCOPE_DENIED', 'Memory is not available in this session.')
     }
@@ -421,10 +432,30 @@ export function createMemoryToolHandlers<A>(deps: ToolDeps<A>): MemoryToolHandle
     return { id, pinned: next.pinned, hidden: next.hidden, changed }
   }
 
+  async function note(agent: A | undefined, args: ProfileNoteRequest): Promise<NoteOutput> {
+    const decision = resolveScope(requireAgent(agent))
+    if (!mayUseOwnerMemory(decision)) {
+      throw new MemoryToolError('SCOPE_DENIED', 'Profile notes are available only in a private owner session.')
+    }
+    if (args.action !== 'list' && decision.capture !== true) {
+      throw new MemoryToolError('SCOPE_DENIED', 'Profile notes are read-only while memory capture is disabled for this session.')
+    }
+    if (!Object.hasOwn(NOTE_FIELDS, args.action)) throw new MemoryToolError('INVALID_ARGS', 'Expected list, add, replace or remove.')
+    const fields = NOTE_FIELDS[args.action]
+    if (Object.keys(args).length !== 1 + fields.length || fields.some(field => !args[field]?.trim())) {
+      throw new MemoryToolError('INVALID_ARGS', `For memory_note ${args.action}, supply exactly ${['action', ...fields].join(', ')} with non-empty values.`)
+    }
+    const result = await deps.notes.apply(args)
+    if (args.action === 'list') return result
+    const { changed, usedChars, limitChars } = result
+    return { changed, usedChars, limitChars }
+  }
+
   return {
     search,
     read,
     timeline,
+    note,
     pin: (agent, args) => setFlags(agent, args, { pinned: true }),
     unpin: (agent, args) => setFlags(agent, args, { pinned: false }),
     hide: (agent, args) => setFlags(agent, args, { hidden: true }),
