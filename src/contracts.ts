@@ -3,9 +3,6 @@
  * framework-agnostic: no Cordis or DSH runtime imports, so every module can be
  * unit-tested against fakes. Host adapters (engine, capture, inject, tools,
  * commands) translate DSH objects into these shapes at the edge.
- *
- * Verified DSH facts these contracts rely on are recorded in
- * docs/dsh-api-notes.md.
  */
 
 declare const brand: unique symbol
@@ -576,7 +573,7 @@ export const COMPACT_CHECKPOINT_SOURCE_KIND = 'compact-checkpoint'
 export const RUNTIME_CONTEXT_SOURCE_KIND = 'runtime-context'
 
 /**
- * `user/message` source kinds that are never conversation (api-notes §7.6):
+ * `user/message` source kinds that are never conversation:
  * our injected memory blocks, DSH compaction checkpoints, and runtime-context
  * snapshots. They never reach transcripts or summaries and never make an
  * episode non-empty.

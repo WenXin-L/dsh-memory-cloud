@@ -17,7 +17,7 @@ const CHECKPOINT_CLOSE = '</compacted-summary>'
 /** Framing price of a checkpoint message excluding the summary text block itself. */
 const FRAME_TOKENS = textBlockTokens(CHECKPOINT_OPEN.length) + textBlockTokens(CHECKPOINT_CLOSE.length) + ROLE_OVERHEAD
 
-/** Share of the replaced region a checkpoint may occupy (api-notes §7.1). */
+/** Share of the replaced region a checkpoint may occupy. */
 export const DEFAULT_SHRINK_RATIO = 0.5
 
 /** Below this cap no useful memory checkpoint fits the shrink guard, so the engine does not call the composer. */

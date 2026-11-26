@@ -31,19 +31,19 @@
 
 ### 分层与数据流
 
-```
-                 ┌──────────── 上下文（工作记忆）────────────┐
- 会话事件 ──────▶│ 系统提示 · <memory-cloud> 记忆块 · 近期原文 │
-   │             └───────────────▲──────────────────┬───────┘
-   │ 捕获                         │ 会话开始 / 压缩后注入  │ 压缩、空闲、会话结束、片段过大
-   ▼                              │                     ▼
- raw.jsonl（原文，只追加）    打包器（按预算）◀──── 片段封存
-   │                              ▲                     │
-   │ memory_read level:raw        │                     ▼ 一次模型调用
-   │                    相处档案 profile.md       summary.md（摘要，近期层）
-   │                    时期总结 rollups/  ◀───── gist.md（总结，远期层）
-   ▼                                  周→月合并
- 模型按需回忆
+```mermaid
+flowchart TD
+    events["会话事件"] -->|逐条追加| raw["片段原文 raw.jsonl"]
+    raw -->|按需读取| recall["模型用 memory_read 核对原文"]
+    raw -->|片段封存后| summarize["模型总结片段"]
+    summarize --> summary["摘要 summary.md"]
+    summarize --> gist["总结 gist.md"]
+    gist -->|远期内容超出配额| rollups["周总结与月总结"]
+    summary -->|近期片段| pack["按预算打包记忆"]
+    gist -->|较早片段| pack
+    rollups --> pack
+    profile["当前作用域的相处档案"] --> pack
+    pack -->|新会话开始或上下文压缩时| block["会话上下文中的记忆块"]
 ```
 
 | 人脑类比 | 插件里的对应物 |
@@ -112,9 +112,9 @@ agent 变为空闲并保持 20 秒（期间状态有任何变化就重新计时�
 
 每个片段有一个保留分：
 
-```
-T = 0.5^(Δt / (h·S)) × (0.5 + I/20)
-```
+$$
+T = 0.5^{\frac{\Delta t}{h S}} \left(0.5 + \frac{I}{20}\right)
+$$
 
 - Δt：距上次被回忆（没有则用片段结束时间）的天数；
 - h：`halfLifeDays`（默认 14）；
@@ -434,22 +434,18 @@ ctx.get('memoryCloud')?.setSessionTags(sessionId, ['qqbot:fish:group:123456'])
 
 ## 磁盘上的存储
 
-```
-<storageRoot，默认 $DSH_HOME/memory-cloud>/
-  state.json                 每个会话的捕获水位、后台任务队列、每日配额、已放弃的时期总结（exhaustedRollups）
-  takeover.json              预设接管记录（按 DSH profile）
-  logs/summarizer.jsonl      每次总结调用的结果、用量和错误（只追加）
-  scopes/<scope>/            owner、qq-group-123456、session-<哈希> …
-    index.json               片段目录（紧凑的单行 JSON）
-    profile.md               可选：你手写的相处档案，按行放进记忆块（超出配额的行省略）
-    profile-notes.json       仅 owner，首次保存偏好时创建；与手写档案分别管理
-    episodes/2026/11/20261120-2130_ab12cd34_1/
-      raw.jsonl              原始事件 {seq,time,type,data,…}，只追加
-      summary.md  gist.md    摘要 / 总结，frontmatter 记录 seq 区间、时间、模型、提示词版本、token 数，摘要还有人物、日期、承诺
-      meta.json              index 条目的镜像，用于重建 index
-    rollups/2026-W47.md  2026-11.md
-    snapshots/<sessionId>-<n>.md   每个实际注入的记忆块或压缩检查点（便于审计）
-```
+存储根目录由 `storageRoot` 指定，默认为 `$DSH_HOME/memory-cloud`。根目录中的 `state.json` 保存会话捕获进度、后台任务、每日配额和已放弃的时期总结。`takeover.json` 按 DSH profile 记录预设接管状态。`logs/summarizer.jsonl` 逐条追加总结调用的结果、用量和错误。
+
+下表中的路径均相对于 `scopes/<scope>/`。例如，主人的数据在 `scopes/owner/`。每个片段有自己的目录，如 `episodes/2026/11/20261120-2130_ab12cd34_1/`。
+
+| 要找的内容 | 位置 |
+|---|---|
+| 片段索引 | `index.json`。每个片段目录中的 `meta.json` 保存对应条目的副本，可用于重建索引。 |
+| 手写档案与已保存的偏好 | `profile.md` 可选，按行打包，超出配额的行省略。`profile-notes.json` 仅在主人首次保存偏好时创建。 |
+| 对话原文 | 片段目录中的 `raw.jsonl`，逐条追加事件的 `seq`、`time`、`type` 和 `data` 等字段。 |
+| 片段摘要与总结 | 片段目录中的 `summary.md` 和 `gist.md`。文件头记录事件序号范围、时间、模型、提示词版本和 token 数，摘要还记录人物、日期和承诺。 |
+| 周总结与月总结 | 例如 `rollups/2026-W47.md` 和 `rollups/2026-11.md`。 |
+| 实际注入的记忆块或压缩检查点 | `snapshots/<sessionId>-<n>.md`。 |
 
 - **全是普通文件**（JSON、JSONL、Markdown），写入都是"临时文件 + rename"的原子写。
 - **不删除任何东西**：
@@ -546,11 +542,7 @@ node scripts/e2e/run-e2e.mjs --only s1,s2 --skip-build --dsh-dir /path/with/node
 
 覆盖的场景包括：headless 接管与压缩、新会话注入与回忆、切换档位、总结失败回退、辅助模式、Web 预设接管、关闭进程。详见 [`scripts/e2e/README.md`](../scripts/e2e/README.md)。
 
-更多文档：
-- 更新日志：[`CHANGELOG.md`](../CHANGELOG.md)
-- 设计：[`docs/superpowers/specs/2026-11-23-memory-cloud-design.md`](superpowers/specs/2026-11-23-memory-cloud-design.md)
-- 已核实的 DSH 事实：[`docs/dsh-api-notes.md`](dsh-api-notes.md)
-- 宿主 API（`ctx.memoryCloud`）：[`docs/host-api.md`](host-api.md)
+开发其他插件时，可通过 `ctx.memoryCloud` 查询状态、调整档位或切换压缩引擎。详见[宿主 API](host-api.md)。
 
 ## 许可
 

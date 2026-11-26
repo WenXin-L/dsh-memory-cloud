@@ -1,6 +1,6 @@
 # Memory Cloud · dsh-memory-cloud-brain
 
-[中文](README.md) · [User guide](docs/reference.en.md) · [Changelog (Chinese)](CHANGELOG.md)
+[中文](README.md) · [How it works](docs/reference.en.md#tiers-and-data-flow) · [User guide](docs/reference.en.md) · [Changelog (Chinese)](CHANGELOG.md)
 
 **Pick up where you left off in a new DeepSeek Harness (DSH) session.** Memory Cloud archives conversations locally, carries recent summaries and older highlights into new sessions, and lets the model look up the original text when it needs details. It can also replace DSH's context compaction engine, but you do not need to enable that to get started.
 

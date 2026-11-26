@@ -1,6 +1,6 @@
 # 记忆云 · dsh-memory-cloud-brain
 
-[English](README.en.md) · [使用手册](docs/reference.md) · [更新日志](CHANGELOG.md)
+[English](README.en.md) · [工作原理](docs/reference.md#分层与数据流) · [使用手册](docs/reference.md) · [更新日志](CHANGELOG.md)
 
 **让 DeepSeek Harness（DSH）在新会话里也能接上以前聊过的事。** 记忆云把旧对话分段存到本机，近期保留较详细的摘要，远期只带要点；需要核对细节时，再按需找回原文。它也可以接管 DSH 的上下文压缩，但首次安装不需要开启。
 

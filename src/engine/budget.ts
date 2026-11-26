@@ -1,6 +1,6 @@
 import type { ModelCapacity, ResolvedBudget } from '../contracts.ts'
 
-/** Pressure headroom the engine passes to compaction-basic instead of its 65 536 default (api-notes §1.2, §7.3). */
+/** Pressure headroom the engine passes to compaction-basic instead of its 65 536 default. */
 export const DEFAULT_ENGINE_HEADROOM_TOKENS = 8192
 
 /**
