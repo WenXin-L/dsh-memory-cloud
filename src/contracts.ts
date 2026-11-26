@@ -594,6 +594,7 @@ export const TOOL_NAMES = {
   unpin: 'memory_unpin',
   hide: 'memory_hide',
   unhide: 'memory_unhide',
+  note: 'memory_note',
 } as const
 
 export const COMMAND_NAME = 'memory'

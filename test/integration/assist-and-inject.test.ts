@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -66,6 +66,7 @@ describe('assist mode', () => {
 
     const opening = await h.preStep(conversation.agent, [userMessage('你好')])
     expect(memoryTexts(opening.kind === 'enter' ? opening.messages : [])).toEqual([])
+    await h.tool(TOOL_NAMES.note, { action: 'add', text: '用户偏好公制单位。' }, conversation.agent)
 
     conversation.route()
     for (let turn = 0; turn < 3; turn++) conversation.exchange(longText(`用户 ${turn}`, 800), longText(`助手 ${turn}`, 800))
@@ -94,6 +95,7 @@ describe('assist mode', () => {
     expect(more).toEqual([])
     expect(block).toContain('<memory-cloud>')
     expect(block).toContain('楼外楼的醋鱼')
+    expect(block).toContain('用户偏好公制单位。')
     expect(block).toContain(`#${sealed!.id}`)
     expect(messages[0]).toBe(claimed)
     expect(messages[1]?.source.kind).toBe(MEMORY_SOURCE_KIND)
@@ -124,9 +126,56 @@ describe('session-start injection', () => {
     expect(snapshots.filter(name => name.startsWith('sess-new-1-'))).toHaveLength(1)
   })
 
+  it('keeps an owner note frozen until a fresh pack and preserves the hand-written profile', async () => {
+    const h = harness = await createHarness({ engine: 'none' })
+    const ownerDir = join(h.root, 'scopes', 'owner')
+    await mkdir(ownerDir, { recursive: true })
+    const manual = 'Use the name 林.\n'
+    await writeFile(join(ownerDir, 'profile.md'), manual)
+    const first = await h.conversation('note-first')
+    const original = 'Prefers temperature in Fahrenheit.'
+    const updated = 'Prefers temperature in Celsius.'
+    await h.tool(TOOL_NAMES.note, { action: 'add', text: original }, first.agent)
+
+    const blockFor = async (agent: Agent) => {
+      const step = await h.preStep(agent, [userMessage('你好')])
+      return memoryTexts(step.kind === 'enter' ? step.messages : []).join('\n')
+    }
+    const frozen = await blockFor(first.agent)
+    expect(frozen).toContain(manual.trim())
+    expect(frozen).toContain(original)
+    await h.tool(TOOL_NAMES.note, { action: 'replace', oldText: original, text: updated }, first.agent)
+    expect(await blockFor(first.agent)).toBe(frozen)
+    const next = await h.conversation('note-next')
+    const refreshed = await blockFor(next.agent)
+    expect(refreshed).toContain(updated)
+    expect(refreshed).not.toContain(original)
+
+    await h.tool(TOOL_NAMES.note, { action: 'remove', oldText: updated }, next.agent)
+    const afterRemoval = await blockFor((await h.conversation('note-removed')).agent)
+    expect(afterRemoval).not.toContain(updated)
+    expect(afterRemoval).toContain(manual.trim())
+    expect(await readFile(join(ownerDir, 'profile.md'), 'utf8')).toBe(manual)
+    expect(h.adapter.calls).toHaveLength(0)
+  })
+
+  it('can still pack earlier episodes when the owner notes file is damaged', async () => {
+    const h = harness = await createHarness({ engine: 'none' })
+    await seedEpisode(h.runtime.store, OWNER_SCOPE, 0, 100)
+    const file = join(h.root, 'scopes', 'owner', 'profile-notes.json')
+    await writeFile(file, '{invalid')
+    const { agent } = await h.conversation('note-recovery')
+    const step = await h.preStep(agent, [userMessage('你好')])
+    expect(memoryTexts(step.kind === 'enter' ? step.messages : []).join('\n')).toContain('摘要0')
+    await expect(h.tool(TOOL_NAMES.note, { action: 'add', text: 'Prefers short answers.' }, agent)).rejects.toThrow()
+    expect(await readFile(file, 'utf8')).toBe('{invalid')
+  })
+
   it('never injects owner memories into a session mapped to another scope', async () => {
     const h = harness = await createHarness({ engine: 'none' })
     for (let index = 0; index < 3; index++) await seedEpisode(h.runtime.store, OWNER_SCOPE, index, 100)
+    const owner = await h.conversation('note-owner')
+    await h.tool(TOOL_NAMES.note, { action: 'add', text: 'Prefers Celsius.' }, owner.agent)
     h.runtime.service.setSessionTags('sess-group-1', ['qqbot:bot1:group:42'])
     ;(h.config.scopeRules as unknown as Record<symbol, (value: unknown) => void>)[Symbol.for('cosmokit.volatile.write')]?.([{ match: 'qqbot:*:group:*', scope: 'qq-group-$2' }])
 
@@ -134,6 +183,7 @@ describe('session-start injection', () => {
     const decision = await h.preStep(conversation.agent, [userMessage('大家好')])
     expect(memoryTexts(decision.kind === 'enter' ? decision.messages : [])).toEqual([])
     expect(h.runtime.service.scopeFor(conversation.agent)).toMatchObject({ scope: 'qq-group-42', private: false })
+    await expect(h.tool(TOOL_NAMES.note, { action: 'list' }, conversation.agent)).rejects.toThrow()
     await expect(h.tool('memory_search', { query: '聊了' }, conversation.agent)).resolves.toMatchObject({ total: 0 })
   })
 })

@@ -1,4 +1,4 @@
-/** `memory_search`, `memory_read`, `memory_timeline`, `memory_pin`/`unpin`/`hide`/`unhide` (design §3.6). */
+/** Tools for episode recall, episode flags, and private owner profile notes. */
 export type { EpisodeId, EpisodeMeta, MemoryStore, RawPage, ResolvedBudget, ScopeDecision, TokenEstimator } from '../contracts.ts'
 export { TOOL_NAMES } from '../contracts.ts'
 export { createMemorySearch } from './search.ts'

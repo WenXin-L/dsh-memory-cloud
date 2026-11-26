@@ -24,7 +24,8 @@ describe('buildUsageSection', () => {
     expect(text).toContain('#20261120-2130_ab12cd34_1')
     expect(text).not.toContain('English:')
     expect(text).not.toMatch(/[A-Za-z]{3,} [a-z]{3,} [a-z]{3,}/)
-    expect(text.split('\n')).toHaveLength(5)
+    expect(text).toContain(TOOL_NAMES.note)
+    expect(text.split('\n')).toHaveLength(6)
     expect(text.length).toBeLessThan(600)
   })
 
@@ -39,7 +40,8 @@ describe('buildUsageSection', () => {
     expect(text).toContain('the newer record wins')
     expect(text).toContain('"AI" means you')
     expect(text).toContain('1–3 lookups per answer')
-    expect(text.split('\n')).toHaveLength(5)
+    expect(text).toContain(TOOL_NAMES.note)
+    expect(text.split('\n')).toHaveLength(6)
   })
 
   it('contains no prompt-variable placeholders', () => {

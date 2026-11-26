@@ -1,4 +1,5 @@
 import type { EpisodeMeta, MemoryStore, PackCandidate, PackInput, RollupEntry, RollupPeriod, ScopeId } from '../contracts.ts'
+import { OWNER_SCOPE } from '../contracts.ts'
 import type { FileMemoryStore } from '../store/index.ts'
 import { parentPeriod, periodId } from '../summarize/jobs/periods.ts'
 
@@ -50,11 +51,12 @@ export function leakingRollupPeriods(index: { readonly episodes: readonly Episod
  * exist (kept while a `/memory rebuild` re-summarizes them) plus the promises
  * and dates of its `summary.md` frontmatter, every rollup that cannot carry a
  * hidden episode ({@link leakingRollupPeriods}; the visible members of a
- * dropped rollup are packed as their own gists), and `profile.md`.
- * Tier texts are cached by summary time, so repeated packs read only the index.
+ * dropped rollup are packed as their own gists), and the scope's profile.
+ * Tier texts are cached by summary time. Each fresh pack reads the current profile.
  */
 export function createPackSourceLoader(
   store: Pick<MemoryStore, 'readIndex' | 'readTier' | 'readRollup' | 'readProfile'> & Pick<FileMemoryStore, 'readTierDocument'>,
+  readOwnerNotes?: () => Promise<readonly string[]>,
 ): PackSourceLoader {
   const tiers = new Map<string, TierTexts>()
 
@@ -94,8 +96,11 @@ export function createPackSourceLoader(
         const text = await store.readRollup(scope, entry.id)
         if (text !== undefined && text.trim().length > 0) rollups.push({ entry, text })
       }
-      const profile = await store.readProfile(scope)
-      return { candidates, rollups, ...profile === undefined || profile.trim().length === 0 ? {} : { profile } }
+      const manual = await store.readProfile(scope)
+      const notes = scope === OWNER_SCOPE && readOwnerNotes ? await readOwnerNotes() : []
+      // Keep the user's hand-written lines first when the profile quota is tight.
+      const profile = [manual, ...notes].filter(line => line?.trim()).join('\n')
+      return { candidates, rollups, ...profile ? { profile } : {} }
     },
   }
 }
