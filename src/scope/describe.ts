@@ -21,7 +21,7 @@ export interface SessionLike {
 
 /**
  * Extra routing tags for one session, e.g. `qqbot:<bot>:group:<id>` from a
- * chat bridge. `SessionHeader` has no tag field (docs/dsh-api-notes.md §6),
+ * chat bridge. `SessionHeader` has no tag field,
  * so bridges or the integrator supply tags through providers. `base` is the
  * header-derived descriptor without tags. Providers must be synchronous;
  * a throwing provider is skipped.

@@ -1,6 +1,6 @@
 # End-to-end check in a real DSH host
 
-`run-e2e.mjs` installs DeepSeek Harness into a throwaway directory, installs this repo into the `headless` and `web` profiles the way a user would (`dsh plugin --profile <p> add <repo>`), and drives scenarios 1–7 of the design's §5 against a scripted fake model. No API key or account is used: every DSH process runs with an empty environment (only `PATH`, a fake `HOME`, a throwaway `DSH_HOME`, `DSH_TELEMETRY_DISABLED=1`).
+`run-e2e.mjs` installs DeepSeek Harness into a throwaway directory, installs this repo into the `headless` and `web` profiles the way a user would (`dsh plugin --profile <p> add <repo>`), and runs [seven scenarios](#scenarios) against a scripted fake model. No API key or account is used: every DSH process runs with an empty environment (only `PATH`, a fake `HOME`, a throwaway `DSH_HOME`, `DSH_TELEMETRY_DISABLED=1`).
 
 ```sh
 pnpm build                              # or let the harness build

@@ -31,19 +31,19 @@ Brain-like layered long-term memory for [DeepSeek Harness](https://github.com/de
 
 ### Tiers and data flow
 
-```
-                 ┌──────────── context (working memory) ────────────┐
- session events ▶│ system prompt · <memory-cloud> block · recent raw │
-   │             └──────────────────▲─────────────────────┬────────┘
-   │ capture                         │ inject at session    │ compaction, idle, session end, size
-   ▼                                 │ start / after compaction
- raw.jsonl (append-only)        packer (budgeted) ◀──── episode sealed
-   │                                 ▲                     │
-   │ memory_read level:raw           │                     ▼ one model call
-   │                       profile.md (hand-written)  summary.md (recent tier)
-   │                       rollups/ (week → month) ◀── gist.md (distant tier)
-   ▼
- model recalls on demand
+```mermaid
+flowchart TD
+    events["Session events"] -->|Append| raw["Episode transcript in raw.jsonl"]
+    raw -->|On demand| recall["Model reads the original with memory_read"]
+    raw -->|When the episode is sealed| summarize["Model summarizes the episode"]
+    summarize --> summary["Summary in summary.md"]
+    summarize --> gist["Gist in gist.md"]
+    gist -->|Older memories exceed their budget| rollups["Weekly and monthly rollups"]
+    summary -->|Recent episodes| pack["Pack memories within budget"]
+    gist -->|Older episodes| pack
+    rollups --> pack
+    profile["Profile for the current scope"] --> pack
+    pack -->|At session start or compaction| block["Memory block in session context"]
 ```
 
 | Brain analogy | In the plugin |
@@ -112,9 +112,9 @@ It works in both modes: engine mode produces a memory checkpoint, assist mode th
 
 Each episode has a retention score:
 
-```
-T = 0.5^(Δt / (h·S)) × (0.5 + I/20)
-```
+$$
+T = 0.5^{\frac{\Delta t}{h S}} \left(0.5 + \frac{I}{20}\right)
+$$
 
 - Δt: days since the episode was last recalled (or since it ended);
 - h: `halfLifeDays` (default 14);
@@ -434,22 +434,18 @@ A byte-stable usage section (in Chinese) in the system prompt covers when to sav
 
 ## Storage on disk
 
-```
-<storageRoot, default $DSH_HOME/memory-cloud>/
-  state.json                 per-session capture watermarks, background job queue, daily quota, given-up rollups (exhaustedRollups)
-  takeover.json              preset takeover records (per DSH profile)
-  logs/summarizer.jsonl      result, usage and errors of every summarizer call (append-only)
-  scopes/<scope>/            owner, qq-group-123456, session-<hash>, …
-    index.json               episode catalogue (compact one-line JSON)
-    profile.md               optional hand-written profile, packed line by line (lines over quota are left out)
-    profile-notes.json       owner only, created when the first preference is saved separately from the hand-written profile
-    episodes/2026/11/20261120-2130_ab12cd34_1/
-      raw.jsonl              raw events {seq,time,type,data,…}, append-only
-      summary.md  gist.md    summary / gist with frontmatter (seq range, times, model, prompt version, tokens; the summary also people, dates, promises)
-      meta.json              mirror of the index entry, used to rebuild the index
-    rollups/2026-W47.md  2026-11.md
-    snapshots/<sessionId>-<n>.md   every injected block or checkpoint, for auditing
-```
+`storageRoot` defaults to `$DSH_HOME/memory-cloud`. At the root, `state.json` tracks capture progress per session, background jobs, the daily quota and abandoned rollups. `takeover.json` records preset takeovers per DSH profile. Each summarizer call appends its result, usage and errors to `logs/summarizer.jsonl`.
+
+The paths below are relative to `scopes/<scope>/`, for example `scopes/owner/` for the owner. Each episode has its own directory, such as `episodes/2026/11/20261120-2130_ab12cd34_1/`.
+
+| What to look for | Where to find it |
+|---|---|
+| Episode index | `index.json`. Each episode's `meta.json` holds a copy of its entry for rebuilding the index. |
+| Hand-written profile and saved preferences | `profile.md` is optional. The packer includes whole lines that fit the budget. `profile-notes.json` is created when the owner first saves a preference. |
+| Original conversation | `raw.jsonl` in the episode directory. Each event appends its `seq`, `time`, `type`, `data` and other fields. |
+| Episode summary and gist | `summary.md` and `gist.md` in the episode directory. Their frontmatter records the sequence range, times, model, prompt version and token count. The summary also records people, dates and promises. |
+| Weekly and monthly rollups | For example, `rollups/2026-W47.md` and `rollups/2026-11.md`. |
+| Memory blocks and compaction checkpoints used in a session | `snapshots/<sessionId>-<n>.md`. |
 
 - **Plain files only** (JSON, JSONL, Markdown). Every write is temp file + rename.
 - **Nothing is deleted**:
@@ -546,11 +542,7 @@ node scripts/e2e/run-e2e.mjs --only s1,s2 --skip-build --dsh-dir /path/with/node
 
 The scenarios cover headless takeover and compaction, new-session injection and recall, level changes, summarizer-failure fallback, assist mode, Web preset takeover and shutdown. See [`scripts/e2e/README.md`](../scripts/e2e/README.md).
 
-More documentation:
-- changelog (Chinese): [`CHANGELOG.md`](../CHANGELOG.md)
-- design (Chinese): [`docs/superpowers/specs/2026-11-23-memory-cloud-design.md`](superpowers/specs/2026-11-23-memory-cloud-design.md)
-- verified DSH facts: [`docs/dsh-api-notes.md`](dsh-api-notes.md)
-- host API (`ctx.memoryCloud`): [`docs/host-api.md`](host-api.md)
+Other plugins can use `ctx.memoryCloud` to check status, adjust the level or switch the compaction engine. See the [host API](host-api.md).
 
 ## License
 

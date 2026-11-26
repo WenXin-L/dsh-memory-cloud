@@ -16,7 +16,7 @@ export interface AttachCaptureOptions {
   readonly idleCheckIntervalMs?: number
 }
 
-/** Header-derived {@link SessionDescriptor} (docs/dsh-api-notes.md §3); carries no tags. */
+/** Header-derived {@link SessionDescriptor} without tags. */
 export function describeSessionHeader(header: SessionHeader): SessionDescriptor {
   return {
     sessionId: header.id,

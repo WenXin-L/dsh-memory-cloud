@@ -1,7 +1,7 @@
 /**
  * Host-level (headless/sdk) takeover: toggle the shipped-disabled engine row
- * and the base `compaction-basic` row through `ctx.pluginManager`
- * (api-notes §2.3). Headless profiles have no HMR, so expect
+ * and the base `compaction-basic` row through `ctx.pluginManager`.
+ * Headless profiles have no HMR, so expect
  * `restart-required`. Do not use this in preset profiles (web/desktop): a
  * host-level engine's global listeners would also compact preset agents.
  */

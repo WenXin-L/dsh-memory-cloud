@@ -1,6 +1,6 @@
 /**
  * One-click takeover of an agent preset's isolated `compaction` group through
- * `ctx.configEditor` (api-notes §2.2): the profile patch gets a copy of the
+ * `ctx.configEditor`. The profile patch gets a copy of the
  * preset row with our engine first and `compaction-basic` disabled. The
  * transforms are pure; the controller adds hashing so the override follows
  * DSH upgrades while it is still an untouched takeover.

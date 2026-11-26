@@ -1,5 +1,5 @@
 /**
- * Engine mode (design §3.1 A, api-notes §1, §2.2, §7): the memory compaction
+ * Engine mode covers the memory compaction
  * engine's host seam, threshold mapping, shrink guard, preset takeover, and the
  * headless row toggle. The engine class itself lives in `./entry.ts`
  * (`lib/engine.js`, row `dsh-memory-cloud-brain/engine`) so importing this

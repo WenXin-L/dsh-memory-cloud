@@ -32,7 +32,7 @@ export function createBudgetResolver(): BudgetResolver {
 }
 
 /**
- * Design §3.7 with the api-notes §7.3 adjustments, resolved as a ladder from
+ * Resolve budgets as a ladder from
  * level 1 up to the requested level so that threshold, retain, M and recall
  * limit never increase from level 1 to level 5, whatever the window:
  * - threshold `T = min(level ceiling, W − O − H, T of the level below)`,
