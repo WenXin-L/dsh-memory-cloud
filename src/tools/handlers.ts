@@ -1,7 +1,9 @@
 import type { Clock, EpisodeId, EpisodeMeta, MemoryIndex, MemoryStore, RawEventRecord, ScopeDecision, ScopeId, TokenEstimator } from '../contracts.ts'
 import { isEmptyEpisode } from '../runtime/sources.ts'
 import { canReadScope, mayUseOwnerMemory } from '../scope/guard.ts'
+import { EventMemoryError, type EventMemory, type EventMemoryEntry } from '../store/event-memory.ts'
 import type { ProfileNoteAction, ProfileNoteRequest, ProfileNoteResult, ProfileNotes } from '../store/profile-notes.ts'
+import { rankEventMemories } from './event-recall.ts'
 import { percent, recallPolicy } from './policy.ts'
 import type { RecallAllowance } from './policy.ts'
 import { isConversationRecord, renderRawRecord } from './raw.ts'
@@ -21,6 +23,7 @@ export interface ToolLogger {
 export interface ToolDeps<A = unknown> {
   readonly store: MemoryStore
   readonly notes: ProfileNotes
+  readonly events: EventMemory
   readonly search: MemorySearch
   /** Scope of the agent's session; owner memory is readable only when `private` is true. */
   scopeFor(agent: A): ScopeDecision
@@ -39,6 +42,9 @@ export type MemoryToolErrorCode =
   | 'SCOPE_DENIED'
   | 'RECALL_PAUSED'
   | 'INVALID_ARGS'
+  | 'REVISION_CONFLICT'
+  | 'EVENT_CAPACITY'
+  | 'EVENT_STORE_ERROR'
   | 'NOT_FOUND'
   | 'HIDDEN'
 
@@ -80,6 +86,21 @@ export interface IdArgs {
   readonly id: string
 }
 
+export interface EventArgs {
+  readonly action: 'find' | 'save' | 'remove'
+  readonly query?: string
+  readonly subject?: string
+  readonly text?: string
+  readonly expectedRevision?: number
+}
+
+export interface EventFindOutput {
+  readonly total: number
+  readonly entries: EventMemoryEntry[]
+}
+
+export type EventOutput = EventFindOutput | { readonly revision: number } | { readonly removed: boolean }
+
 type NoteOutput = Omit<ProfileNoteResult, 'entries'> & { readonly entries?: string[] }
 
 export interface MemoryToolHandlers<A> {
@@ -91,6 +112,7 @@ export interface MemoryToolHandlers<A> {
   hide(agent: A | undefined, args: IdArgs): Promise<FlagOutput>
   unhide(agent: A | undefined, args: IdArgs): Promise<FlagOutput>
   note(agent: A | undefined, args: ProfileNoteRequest): Promise<NoteOutput>
+  event(agent: A | undefined, args: EventArgs, signal?: AbortSignal): Promise<EventOutput>
 }
 
 /** One page of a raw read's view; `total` counts the view, `hidden` the episode records left out of it. */
@@ -110,6 +132,11 @@ const TIMELINE_GIST_TOKENS = 80
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
 const NOTE_FIELDS: Record<ProfileNoteAction, readonly ('text' | 'oldText')[]> = {
   list: [], add: ['text'], replace: ['oldText', 'text'], remove: ['oldText'],
+}
+const EVENT_FIELDS: Record<EventArgs['action'], readonly string[]> = {
+  find: ['action', 'query'],
+  save: ['action', 'subject', 'text', 'expectedRevision'],
+  remove: ['action', 'subject', 'expectedRevision'],
 }
 
 function errorText(error: unknown): string {
@@ -169,12 +196,12 @@ export function createMemoryToolHandlers<A>(deps: ToolDeps<A>): MemoryToolHandle
     }
   }
 
-  function scopeOf(agent: A): ScopeId {
+  function readableScope(agent: A): ScopeDecision {
     const decision = resolveScope(agent)
     if (!canReadScope(decision)) {
       throw new MemoryToolError('SCOPE_DENIED', 'Memory is not available in this session.')
     }
-    return decision.scope
+    return decision
   }
 
   function allowance(agent: A): RecallAllowance {
@@ -223,7 +250,7 @@ export function createMemoryToolHandlers<A>(deps: ToolDeps<A>): MemoryToolHandle
 
   async function search(agent: A | undefined, args: SearchArgs, signal?: AbortSignal): Promise<SearchOutput> {
     const caller = requireAgent(agent)
-    const scope = scopeOf(caller)
+    const { scope } = readableScope(caller)
     const allowed = allowance(caller)
     const from = parseBound(args.from, 'from')
     const to = parseBound(args.to, 'to')
@@ -340,7 +367,7 @@ export function createMemoryToolHandlers<A>(deps: ToolDeps<A>): MemoryToolHandle
 
   async function read(agent: A | undefined, args: ReadArgs, signal?: AbortSignal): Promise<ReadOutput> {
     const caller = requireAgent(agent)
-    const scope = scopeOf(caller)
+    const { scope } = readableScope(caller)
     const allowed = allowance(caller)
     const id = parseEpisodeId(args.id)
     const { meta } = await findEpisode(scope, id, false)
@@ -383,7 +410,7 @@ export function createMemoryToolHandlers<A>(deps: ToolDeps<A>): MemoryToolHandle
 
   async function timeline(agent: A | undefined, args: TimelineArgs, signal?: AbortSignal): Promise<TimelineOutput> {
     const caller = requireAgent(agent)
-    const scope = scopeOf(caller)
+    const { scope } = readableScope(caller)
     const allowed = allowance(caller)
     const id = parseEpisodeId(args.id)
     const { meta, index } = await findEpisode(scope, id, false)
@@ -419,7 +446,7 @@ export function createMemoryToolHandlers<A>(deps: ToolDeps<A>): MemoryToolHandle
 
   async function setFlags(agent: A | undefined, args: IdArgs, change: { readonly pinned?: boolean; readonly hidden?: boolean }): Promise<FlagOutput> {
     const caller = requireAgent(agent)
-    const scope = scopeOf(caller)
+    const { scope } = readableScope(caller)
     const id = parseEpisodeId(args.id)
     const { meta } = await findEpisode(scope, id, true)
     const changed = (change.pinned !== undefined && change.pinned !== meta.pinned)
@@ -451,11 +478,87 @@ export function createMemoryToolHandlers<A>(deps: ToolDeps<A>): MemoryToolHandle
     return { changed, usedChars, limitChars }
   }
 
+  async function accessEvents<T>(action: EventArgs['action'], operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation()
+    } catch (error) {
+      if (error instanceof EventMemoryError) {
+        switch (error.reason) {
+          case 'conflict':
+            throw new MemoryToolError('REVISION_CONFLICT', 'The event revision has changed. Find the subject and use its latest revision.')
+          case 'input':
+            throw new MemoryToolError('INVALID_ARGS', 'Use a short, nonempty line without control characters for each subject and text.')
+          case 'capacity':
+            throw new MemoryToolError('EVENT_CAPACITY', 'This scope has reached its event limit. Existing subjects can still be revised.')
+        }
+      }
+      throw new MemoryToolError('EVENT_STORE_ERROR', `Event memory ${action} failed while accessing the store.`)
+    }
+  }
+
+  async function findEvents(scope: ScopeId, query: string, capTokens: number, signal?: AbortSignal): Promise<EventFindOutput> {
+    const stored = await accessEvents('find', () => deps.events.list(scope))
+    signal?.throwIfAborted()
+    const matches = rankEventMemories(stored, query)
+    const result: EventFindOutput = { total: matches.length, entries: [] }
+    if (estimator.estimate(JSON.stringify(result)) > capTokens) {
+      throw new MemoryToolError('RECALL_PAUSED', 'The recall budget is too small to return event memory results.')
+    }
+    for (const { subject, text, revision, updatedAt } of matches.slice(0, 5)) {
+      const entry = { subject, text, revision, updatedAt }
+      result.entries.push(entry)
+      if (estimator.estimate(JSON.stringify(result)) <= capTokens) continue
+
+      // Keep the subject and revision intact so a caller can still correct this entry.
+      entry.text = ''
+      const remaining = capTokens - estimator.estimate(JSON.stringify(result))
+      entry.text = truncateToTokens(text, remaining, {
+        estimate: value => estimator.estimate(JSON.stringify(value).slice(1, -1)),
+      }).text || '…'
+      if (estimator.estimate(JSON.stringify(result)) > capTokens) result.entries.pop()
+      break
+    }
+    return result
+  }
+
+  async function event(agent: A | undefined, args: EventArgs, signal?: AbortSignal): Promise<EventOutput> {
+    const caller = requireAgent(agent)
+    const { scope, capture } = readableScope(caller)
+    const { action, subject, text, expectedRevision } = args
+    if (!Object.hasOwn(EVENT_FIELDS, action) || Object.keys(args).some(key => !EVENT_FIELDS[action].includes(key))) {
+      throw new MemoryToolError('INVALID_ARGS', 'Unexpected fields for this memory_event action.')
+    }
+    signal?.throwIfAborted()
+    if (action === 'find') {
+      const result = await findEvents(scope, args.query ?? '', allowance(caller).capTokens, signal)
+      if (!canReadScope(resolveScope(caller), scope)) {
+        throw new MemoryToolError('SCOPE_DENIED', 'The session scope changed during the lookup.')
+      }
+      return result
+    }
+    if (capture !== true) {
+      throw new MemoryToolError('SCOPE_DENIED', 'Event memory is read-only while memory capture is disabled for this session.')
+    }
+    if (!subject?.trim()) throw new MemoryToolError('INVALID_ARGS', 'A non-empty subject is required.')
+    const minimum = action === 'save' ? 0 : 1
+    if (expectedRevision === undefined || !Number.isSafeInteger(expectedRevision) || expectedRevision < minimum) {
+      throw new MemoryToolError('INVALID_ARGS', `For ${action}, expectedRevision must be a safe integer of at least ${minimum}.`)
+    }
+    if (action === 'remove') {
+      const removed = await accessEvents(action, () => deps.events.remove(scope, { subject, expectedRevision }))
+      return { removed }
+    }
+    if (!text?.trim()) throw new MemoryToolError('INVALID_ARGS', 'A non-empty text is required for save.')
+    const { revision } = await accessEvents(action, () => deps.events.save(scope, { subject, text, expectedRevision }))
+    return { revision }
+  }
+
   return {
     search,
     read,
     timeline,
     note,
+    event,
     pin: (agent, args) => setFlags(agent, args, { pinned: true }),
     unpin: (agent, args) => setFlags(agent, args, { pinned: false }),
     hide: (agent, args) => setFlags(agent, args, { hidden: true }),

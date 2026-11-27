@@ -1,10 +1,11 @@
 import type { ModelSelection, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed, UserMessage } from '@deepseek-ai/dsh-llm'
-import { MEMORY_SOURCE_KIND, OWNER_SCOPE } from '../contracts.ts'
+import { EVENT_MEMORY_SOURCE_KIND, MEMORY_SOURCE_KIND, OWNER_SCOPE } from '../contracts.ts'
 import type { Clock, EffectiveMode, ScopeDecision, ScopeId, SessionDescriptor } from '../contracts.ts'
 import { MEMORY_BLOCK_HEADER, MEMORY_BLOCK_OPEN } from '../pack/index.ts'
 import { canReadScope } from '../scope/guard.ts'
+import { eventQuery, visibleEventRevisions, type EventRecall } from './events.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -70,6 +71,8 @@ export interface PackRequest<A extends InjectAgent = InjectAgent> {
   readonly mode: Exclude<EffectiveMode, 'off'>
   /** `session-start` until the first compaction checkpoint is visible, `refill` afterwards. */
   readonly reason: InjectReason
+  /** Part of this step's memory budget occupied by matching event records. */
+  readonly eventTokens: number
   /** `session.seq` when packing started; a stable per-session ordinal for the snapshot file. */
   readonly atSeq: number
   readonly modelSelection: Readonly<ModelSelection>
@@ -92,6 +95,7 @@ export interface InjectLogger {
 export interface InjectorDeps<A extends InjectAgent = InjectAgent> {
   /** Resolve the block to inject, `null` when there is nothing to inject; reject on failure. */
   readonly pack: (request: PackRequest<A>) => Promise<PackedMemory | null>
+  readonly recallEvents?: (agent: A, scope: ScopeId, query: string, signal: AbortSignal) => Promise<EventRecall | undefined>
   readonly mode: (agent: A) => EffectiveMode
   readonly scopeFor: (session: SessionDescriptor, agent: A) => ScopeDecision
   readonly clock: Clock
@@ -239,15 +243,16 @@ export function createInjector<A extends InjectAgent>(deps: InjectorDeps<A>): In
     request: Omit<PackRequest<A>, 'signal'>,
     epoch: number | undefined,
     signal: AbortSignal,
+    waitMs: number,
   ): Promise<PackedMemory | null | undefined> {
-    const key = `${request.scope.scope}|${epoch ?? ''}`
+    const key = `${request.scope.scope}|${epoch ?? ''}|${request.eventTokens}`
     if (state.frozen !== undefined && state.frozen.key === key) return state.frozen.memory
     let flight = state.flight
     if (flight === undefined || flight.key !== key || clock.now() - flight.startedAt > STALE_PACK_MS) {
       flight?.controller.abort()
       flight = launch(state, request, key)
     }
-    const outcome = await within(flight.promise, timeoutMs, signal)
+    const outcome = await within(flight.promise, waitMs, signal)
     if (outcome !== TIMED_OUT) return outcome
     if (!signal.aborted) {
       logger.warn('memory packing for session %s exceeded %d ms; continuing without memory', request.session.sessionId, timeoutMs)
@@ -255,54 +260,64 @@ export function createInjector<A extends InjectAgent>(deps: InjectorDeps<A>): In
     return undefined
   }
 
-  async function recall(payload: PreStepPayload<A>, entering: readonly UserMessage[]): Promise<UserMessage | undefined> {
-    const { agent, turn } = payload
+  async function recall(payload: PreStepPayload<A>, entering: readonly UserMessage[]): Promise<UserMessage[]> {
+    const { agent, turn, signal } = payload
     const session = agent.session
-    if (session.header.origin === 'subagent') return undefined
     const mode = deps.mode(agent)
-    if (mode === 'off') return undefined
+    if (session.header.origin === 'subagent' || mode === 'off') return []
     const descriptor = describeSession(session)
     const scope = deps.scopeFor(descriptor, agent)
-    if (!scope.capture) return undefined
+    if (!scope.capture) return []
 
     const state = stateFor(session.id)
     const continuation = state.lastTurn === turn
     state.lastTurn = turn
-    if (entering.length === 0 && !(continuation && payload.messages.length === 0)) return undefined
-    if (entering.some(isMemoryMessage)) return undefined
-
+    if (entering.length === 0 && !(continuation && payload.messages.length === 0)) return []
     const surface = scanSurface(session)
-    if (surface.hasMemoryBlock || surface.memoryCheckpoint) warnStale(state, scope, session.id)
-    if (surface.hasMemoryBlock || surface.memoryCheckpoint || !canReadScope(scope)) return undefined
+    const hasArchive = surface.hasMemoryBlock || surface.memoryCheckpoint || entering.some(isMemoryMessage)
+    if (canReadScope(scope, OWNER_SCOPE)) delete state.warned
+    else if ((hasArchive && state.shown === OWNER_SCOPE) || visibleEventRevisions(session, OWNER_SCOPE).size > 0) {
+      warnStale(state, scope, session.id)
+    }
+    if (!canReadScope(scope)) return []
+
+    const deadline = clock.now() + timeoutMs
+    let event: EventRecall | undefined
+    if (deps.recallEvents !== undefined && !entering.some(message => message.source.kind === EVENT_MEMORY_SOURCE_KIND)) {
+      const query = eventQuery(payload.messages, entering)
+      if (query !== '') {
+        try {
+          const found = await within(deps.recallEvents(agent, scope.scope, query, signal), timeoutMs, signal)
+          if (found === TIMED_OUT) {
+            if (!signal.aborted) logger.warn('event recall exceeded %d ms for session %s', timeoutMs, session.id)
+          } else event = found
+        } catch {
+          logger.warn('could not load event memory for session %s; check event storage format and permissions', session.id)
+        }
+      }
+    }
+    if (signal.aborted || sessions.get(session.id) !== state) return []
 
     const reason: InjectReason = surface.epoch === undefined ? 'session-start' : 'refill'
-    const request = {
-      agent,
-      session: descriptor,
-      scope,
-      mode,
-      reason,
-      atSeq: session.seq,
-      modelSelection: payload.modelSelection,
+    const request = { agent, session: descriptor, scope, mode, reason, atSeq: session.seq, modelSelection: payload.modelSelection, eventTokens: event?.tokens ?? 0 }
+    const memory = hasArchive ? undefined : await resolveMemory(state, request, surface.epoch, signal, Math.max(0, deadline - clock.now()))
+    if (memory == null && event === undefined) return []
+    // Scope rules, tags and mode can all change while either disk read is in flight.
+    const current = deps.scopeFor(descriptor, agent)
+    if (signal.aborted || sessions.get(session.id) !== state || !current.capture || !canReadScope(current, scope.scope) || deps.mode(agent) === 'off') return []
+
+    const additions: UserMessage[] = []
+    if (memory != null) {
+      logger.info('injecting memory block into session %s (%s, %s mode, %d chars, snapshot %s)', session.id, reason, mode, memory.text.length, memory.snapshotRef ?? '-')
+      additions.push(createUserMessage({ content: [{ type: 'text', text: memory.text }], source: { kind: MEMORY_SOURCE_KIND, form: 'recall' } }))
+      state.shown = scope.scope
     }
-    const memory = await resolveMemory(state, request, surface.epoch, payload.signal)
-    if (memory === undefined || memory === null || payload.signal.aborted) return undefined
-    state.shown = scope.scope
-    delete state.warned
-    logger.info(
-      'injecting memory block into session %s (%s, %s mode, %d chars, snapshot %s)',
-      session.id, reason, mode, memory.text.length, memory.snapshotRef ?? '-',
-    )
-    return createUserMessage({
-      content: [{ type: 'text', text: memory.text }],
-      source: { kind: MEMORY_SOURCE_KIND, form: 'recall' },
-    })
+    if (event !== undefined) additions.push(event.message)
+    return additions
   }
 
   function warnStale(state: SessionState, scope: ScopeDecision, sessionId: string): void {
-    const shown = state.shown
-    if (shown !== OWNER_SCOPE || canReadScope(scope, shown)) return
-    const pair = `${shown}|${scope.scope}`
+    const pair = `${OWNER_SCOPE}|${scope.scope}`
     if (state.warned === pair) return
     state.warned = pair
     logger.warn(
@@ -316,10 +331,10 @@ export function createInjector<A extends InjectAgent>(deps: InjectorDeps<A>): In
       const decision = await next()
       if (decision.kind !== 'enter' || payload.signal.aborted) return decision
       try {
-        const memory = await recall(payload, decision.messages)
-        if (memory === undefined) return decision
+        const additions = await recall(payload, decision.messages)
+        if (additions.length === 0) return decision
         const at = decision.messages.findLastIndex(message => payload.messages.includes(message))
-        return { ...decision, messages: decision.messages.toSpliced(at + 1, 0, memory) }
+        return { ...decision, messages: decision.messages.toSpliced(at + 1, 0, ...additions) }
       } catch (error: unknown) {
         logger.warn('memory injection skipped for session %s: %s', sessionIdOf(payload.agent), describeError(error))
         return decision
@@ -340,9 +355,10 @@ export function createInjector<A extends InjectAgent>(deps: InjectorDeps<A>): In
     rescope(sessionId) {
       const state = sessions.get(sessionId)
       if (state === undefined) return
-      state.flight?.controller.abort()
-      delete state.flight
-      delete state.frozen
+      const { flight, frozen: _frozen, ...kept } = state
+      flight?.controller.abort()
+      // Replacing the state also invalidates pending event reads, even after a switch away and back.
+      sessions.set(sessionId, kept)
     },
 
     dispose() {

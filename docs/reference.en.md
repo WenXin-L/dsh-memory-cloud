@@ -405,10 +405,17 @@ All tools only see the current session's scope and go through the same `canReadS
 | `memory_pin` / `memory_unpin` | `id` | Pin / unpin |
 | `memory_hide` / `memory_unhide` | `id` | Hide from blocks and search / restore; nothing is deleted. Rollups that contain a hidden episode are not injected either (see [Rollups](#rollups)) |
 | `memory_note` | `action` (`list`, `add`, `replace`, `remove`), `text`, `oldText` | Manage lasting preferences in a private owner session. List takes no text. Add takes the new text. Remove and replace require the entire old entry in `oldText`; replace also takes the new `text`. Writes require capture to be enabled for the caller. |
+| `memory_event` | `action` (`find`, `save`, `remove`), `query`, `subject`, `text`, `expectedRevision` | Look up, save, correct or remove a user-confirmed fact or decision in the current scope. Writes require a session with capture enabled. |
 
-Use this tool when the user explicitly asks to remember, correct, or forget a preference across sessions. “Keep this answer short” applies to one reply. “Remember that I prefer short answers” warrants a note. Store one fact per line. Notes share a budget of 1,375 Unicode code points, including one newline between entries. Adding an existing note uses no extra space. If the store is full, list the notes and shorten or remove an entry according to the user's intent.
+Use `memory_note` when the user explicitly asks to remember, correct, or forget a preference across sessions. “Keep this answer short” applies to one reply. “Remember that I prefer short answers” warrants a note. Store one fact per line. Notes share a budget of 1,375 Unicode code points, including one newline between entries. Adding an existing note uses no extra space. If the store is full, list the notes and shorten or remove an entry according to the user's intent.
 
 Notes share the profile's injection budget and follow the hand-written lines. List reflects writes immediately. A new session or a fresh pack at compaction picks up the change. Previously injected text, snapshots, and transcripts remain historical records. If you roll back to an earlier plugin version, keep `profile-notes.json` to reuse the notes after upgrading again.
+
+An event has a stable subject, such as “Orchid launch date”, and one user-confirmed fact or decision. Create it with `save`, a subject, the text, and `expectedRevision: 0`. To change the date, `find` the existing subject and pass its `revision` to `save`. To remove it, pass the subject and its current revision to `remove`. If another session edited it first, read the current revision and check the intended change. An empty `find` lists the most recently revised events. A query prioritizes subject matches and then body matches. Both return up to five entries.
+
+In assist and engine mode, new human text triggers a local lookup of current events in the session’s scope. Matching uses words and adjacent CJK characters. Up to three matches can enter the step. Events use at most 512 estimated tokens, which count against the same memory budget as any archive block assembled for that step. The event cap halves above 60% context pressure, and automatic event recall pauses above 90%. A long record may appear as a subject to look up. An event revision already visible in context is skipped. A later question can recall a newer revision. Existing conversations and historical checkpoints keep the text they originally received. In `off` mode, explicit `find` calls remain available within the session’s read permissions and recall budget.
+
+Events are saved through a separate tool call. Hiding an episode affects the episode and its rollups. Use `remove` on the event subject to remove a separately saved decision.
 
 One recall returns at most the level's single-recall limit, and the cap tightens with context pressure:
 - above 60%: the cap is halved;
@@ -443,12 +450,13 @@ The paths below are relative to `scopes/<scope>/`, for example `scopes/owner/` f
 | Episode index | `index.json`. Each episode's `meta.json` holds a copy of its entry for rebuilding the index. |
 | Hand-written profile and saved preferences | `profile.md` is optional. The packer includes whole lines that fit the budget. `profile-notes.json` is created when the owner first saves a preference. |
 | Original conversation | `raw.jsonl` in the episode directory. Each event appends its `seq`, `time`, `type`, `data` and other fields. |
+| Current version of confirmed events | `events.json`, created on the first save. A scope holds up to 256 events. The single-line subject and text allow 80 and 600 Unicode code points respectively. Keep the file across a plugin rollback to read it again after upgrading. |
 | Episode summary and gist | `summary.md` and `gist.md` in the episode directory. Their frontmatter records the sequence range, times, model, prompt version and token count. The summary also records people, dates and promises. |
 | Weekly and monthly rollups | For example, `rollups/2026-W47.md` and `rollups/2026-11.md`. |
 | Memory blocks and compaction checkpoints used in a session | `snapshots/<sessionId>-<n>.md`. |
 
 - **Plain files only** (JSON, JSONL, Markdown). Every write is temp file + rename.
-- **Nothing is deleted**:
+- **Historical conversation archives**
   - the raw archive is append-only;
   - before `summary.md`, `gist.md` or a rollup is overwritten (re-summarizing, `/memory rebuild`, re-merging), a differing previous version is kept as `<file>.prev-<timestamp>`;
   - a corrupt `index.json`, `state.json` or `meta.json` is kept as `<file>.corrupt-<timestamp>`.

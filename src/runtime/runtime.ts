@@ -24,6 +24,7 @@ import {
 import type { EngineFallback, EngineFallbackKind } from '../engine/index.ts'
 import { attachInjector, buildUsageSection, createInjector } from '../inject/index.ts'
 import type { Injector } from '../inject/index.ts'
+import { MAX_EVENT_RECALL_TOKENS, renderEventRecall } from '../inject/events.ts'
 import { createMemoryPacker, createTokenEstimator } from '../pack/index.ts'
 import {
   canReadScope,
@@ -40,11 +41,13 @@ import {
 import type { CoexistenceReport, SessionLike } from '../scope/index.ts'
 import { createFileMemoryStore } from '../store/index.ts'
 import type { FileMemoryStore } from '../store/index.ts'
+import { createEventMemory } from '../store/event-memory.ts'
 import { createProfileNotes } from '../store/profile-notes.ts'
 import { createDshLlmClient } from '../summarize/index.ts'
 import { createJobRunner, DEFAULT_JOB_RUNNER_OPTIONS } from '../summarize/jobs/index.ts'
 import type { JobRunner } from '../summarize/jobs/index.ts'
-import { createMemorySearch, registerMemoryTools } from '../tools/index.ts'
+import { rankEventMemories } from '../tools/event-recall.ts'
+import { createMemorySearch, recallPolicy, registerMemoryTools } from '../tools/index.ts'
 import { createBudgetService, levelOverrides } from './budget.ts'
 import type { BudgetService } from './budget.ts'
 import { createCheckpointComposer } from './composer.ts'
@@ -305,6 +308,7 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
 
   const packer = createMemoryPacker({ estimator })
   const notes = createProfileNotes(store.root)
+  const events = createEventMemory(store.root, clock)
   const sources = createPackSourceLoader(store, async () => {
     try {
       return (await notes.apply({ action: 'list' })).entries
@@ -679,9 +683,22 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
   attachCaptureToDsh(ctx, capture, { describe, idleCheckIntervalMs: IDLE_CHECK_INTERVAL_MS })
 
   const injector = createInjector<Agent>({
-    pack: async ({ agent, session, scope, atSeq }) => {
+    async recallEvents(agent, scope, query, signal) {
+      const entries = await events.list(scope)
+      if (entries.length === 0 || signal.aborted) return undefined
+      const ranked = rankEventMemories(entries, query)
+      if (ranked.length === 0) return undefined
       const budget = await budgets.budgetFor(agent)
+      const allowed = recallPolicy(pressureOf(agent), Math.min(MAX_EVENT_RECALL_TOKENS, budget.recallLimitTokens))
+      if (signal.aborted || allowed.kind === 'refuse') return undefined
+      return renderEventRecall(agent.session, scope, ranked, Math.min(allowed.capTokens, budget.memoryBudgetTokens), estimator)
+    },
+    pack: async ({ agent, session, scope, atSeq, eventTokens, signal }) => {
+      const resolved = await budgets.budgetFor(agent)
+      if (signal.aborted) return null
+      const budget = { ...resolved, memoryBudgetTokens: Math.max(0, resolved.memoryBudgetTokens - eventTokens) }
       const input = await sources.load(scope.scope, { excludeOpenOf: session.sessionId })
+      if (signal.aborted) return null
       const packed = packer.pack({ ...input, budget, mode: 'session-start', halfLifeDays: config.halfLifeDays.get(), now: clock.now() })
       if (packed.text.trim().length === 0) return null
       try {
@@ -703,6 +720,7 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
     registerMemoryTools(ctx, {
       store,
       notes,
+      events,
       search: createMemorySearch({ store, estimator }),
       estimator,
       clock,

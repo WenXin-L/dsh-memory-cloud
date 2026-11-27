@@ -87,11 +87,11 @@ function isWeakTerm(term: string): boolean {
   return [...term].some(char => PARTICLES.has(char))
 }
 
-/** Distinct query terms with stopwords and particle bigrams removed, unless nothing else is left. */
-export function queryTerms(text: string): readonly string[] {
+/** Distinct query terms. Browsing the archive keeps a weak-only query searchable. */
+export function queryTerms(text: string, keepWeakOnly = true): readonly string[] {
   const all = [...new Set(tokenize(text).terms)]
   const strong = all.filter(term => !isWeakTerm(term))
-  return strong.length > 0 ? strong : all
+  return strong.length === 0 && keepWeakOnly ? all : strong
 }
 
 const FULL_DATE = /(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*[日号]?/g

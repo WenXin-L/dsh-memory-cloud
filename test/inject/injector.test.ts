@@ -5,7 +5,7 @@ import type { EffectiveMode, ScopeDecision, ScopeId } from '../../src/contracts.
 import { createInjector, scanSurface, STALE_PACK_MS } from '../../src/inject/index.ts'
 import { startsWithMemoryBlock } from '../../src/inject/injector.ts'
 import { MEMORY_BLOCK_HEADER } from '../../src/pack/index.ts'
-import type { Injector, PackedMemory, PackRequest } from '../../src/inject/index.ts'
+import type { Injector, InjectorDeps, PackedMemory, PackRequest } from '../../src/inject/index.ts'
 import {
   deferred,
   type FakeAgent,
@@ -33,6 +33,7 @@ interface Harness {
 }
 
 function harness(options: {
+  recallEvents?: NonNullable<InjectorDeps<FakeAgent>['recallEvents']>
   pack?: (request: PackRequest<FakeAgent>) => Promise<PackedMemory | null>
   mode?: EffectiveMode
   timeoutMs?: number
@@ -59,6 +60,7 @@ function harness(options: {
     scopeFor: () => h.decision ?? ownerScope(h.capture),
     clock,
     logger,
+    ...options.recallEvents === undefined ? {} : { recallEvents: options.recallEvents },
     ...options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs },
     ...options.maxSessions === undefined ? {} : { maxSessions: options.maxSessions },
   })
@@ -254,6 +256,35 @@ describe('createInjector', () => {
     const decision = await step(h.injector, fakeAgent('s1'), { turn: 1, step: 1, claimed: [prompt('a')] })
     expect(memoryIn(entered(decision))).toHaveLength(1)
     expect(h.pack.mock.calls[0]?.[0].scope.scope).toBe('session-0badc0de')
+  })
+
+  it('warns once about a visible owner event even with no archive block or process-local history', async () => {
+    const h = harness({ pack: async () => null })
+    const agent = fakeAgent('s1')
+    agent.session.appendMessage({ ...prompt('Private fact'), source: { kind: 'memory-cloud-event', form: 'recall', scope: 'owner', revisions: [1] } })
+    h.decision = groupScope()
+    await step(h.injector, agent, { turn: 1, step: 1, claimed: [prompt('question')] })
+    await step(h.injector, agent, { turn: 2, step: 1, claimed: [prompt('another question')] })
+    expect(h.logger.lines.filter(line => line.level === 'warn' && line.text.includes('owner memory block'))).toHaveLength(1)
+    expect(h.pack.mock.calls[0]?.[0].scope.scope).toBe('qq-group-1')
+  })
+
+  it('discards an unfinished event lookup across a rescope, even when the final scope is the original one', async () => {
+    const started = deferred<void>()
+    const release = deferred<void>()
+    const h = harness({ recallEvents: async () => {
+      started.resolve()
+      await release.promise
+      return { tokens: 10, message: { ...prompt('private'), source: { kind: 'memory-cloud-event', form: 'recall', scope: 'owner', revisions: [1] } } }
+    } })
+    const agent = fakeAgent('s1')
+    const claimed = [prompt('launch date')]
+    const pending = step(h.injector, agent, { turn: 1, step: 1, claimed })
+    await started.promise
+    h.injector.rescope(agent.session.id)
+    release.resolve()
+    expect(entered(await pending)).toEqual(claimed)
+    expect(h.pack).not.toHaveBeenCalled()
   })
 
   it('repacks instead of reusing the frozen block when the scope changes within an epoch', async () => {

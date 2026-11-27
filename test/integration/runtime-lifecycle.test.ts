@@ -331,6 +331,8 @@ describe('idle consolidation', () => {
 
     h.ctx.emit('agent/status', { agent: conversation.agent, status: 'idle' })
     await expect.poll(() => compactNow.mock.calls.length).toBe(1)
+    // The real engine can still be writing its snapshot when the call has just started.
+    await compactNow.mock.results[0]!.value
   })
 
   it('cancels a pending consolidation when the plugin is disposed', async () => {
