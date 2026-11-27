@@ -45,6 +45,7 @@ describe('setHostEngineEnabled', () => {
     const outcome = await setHostEngineEnabled(manager, true)
     expect(calls).toEqual([['include:compaction-basic', false], [`include:${ENGINE_ROW.id}`, true]])
     expect(outcome).toMatchObject({ ok: true, application: 'restart-required', restartReasons: ['no-hmr'] })
+    expect(outcome.message).toMatch(/重启 DSH 后生效.*Restart DSH/)
     expect(await readHostEngineState(manager)).toMatchObject({ active: true })
   })
 
@@ -62,6 +63,20 @@ describe('setHostEngineEnabled', () => {
     const { manager, calls } = fakeManager()
     expect(await setHostEngineEnabled(manager, false)).toMatchObject({ ok: true, application: 'unchanged', steps: [] })
     expect(calls).toEqual([])
+    await setHostEngineEnabled(manager, true)
+    expect(await setHostEngineEnabled(manager, true)).toMatchObject({ application: 'unchanged', steps: [], message: expect.stringContaining('already selected') })
+  })
+
+  it('does not name compaction-basic as the replacement when the profile has no such row', async () => {
+    const { manager, rows } = fakeManager({ hmr: true })
+    rows.splice(rows.findIndex(row => row.patchId === 'compaction-basic'), 1)
+    await setHostEngineEnabled(manager, true)
+    for (const application of ['applied', 'unchanged']) {
+      const result = await setHostEngineEnabled(manager, false)
+      expect(result).toMatchObject({ ok: true, application })
+      expect(result.message).toMatch(/记忆引擎已停用.*engine is disabled/)
+      expect(result.message).not.toContain('compaction-basic')
+    }
   })
 
   it('rolls the first step back when the engine cannot be enabled', async () => {

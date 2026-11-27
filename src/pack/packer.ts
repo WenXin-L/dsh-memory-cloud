@@ -29,7 +29,7 @@ export const MEMORY_BLOCK_HEADINGS = {
   ongoing: '## 进行中 Ongoing',
 } as const
 
-const POINTER_NOTE = '（摘要见 memory_read）'
+const POINTER_NOTE = '（用此 ID 和 memory_read 读摘要）'
 const PERIOD_LABELS: Readonly<Record<string, string>> = { week: '周', month: '月', year: '年' }
 const DAY_MS = 86_400_000
 const AGENDA_LIMIT = 8
@@ -41,11 +41,11 @@ const DATE_HORIZON_DAYS = 90
 const ZH_WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const
 
 function pendingNotice(count: number, from: string, to: string): string {
-  return `- 另有 ${count} 段对话尚未整理（${from === to ? from : `${from}~${to}`}）`
+  return `- ${from === to ? from : `${from}~${to}`} 的 ${count} 段对话还没有总结或摘要。`
 }
 
 export function omittedNotice(count: number): string {
-  return `还有 ${count} 段更早记忆，可用 memory_search 查询`
+  return `有 ${count} 段记忆没装进来。你可以用 memory_search 查找。`
 }
 
 /**

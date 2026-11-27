@@ -19,23 +19,23 @@ export function isUnmatchedSessions(value: unknown): value is UnmatchedSessions 
 
 /**
  * Resolve the `unmatchedSessions` setting (design §3.8 firewall): `auto`
- * isolates unmatched sessions whenever a chat-bridge plugin is loaded, because
- * bridge sessions carry no tags that rules could match, and keeps them in the
- * owner scope otherwise. Anything unrecognised fails closed to `isolated`.
+ * isolates unmatched sessions when a known bridge is detected. A bridge may
+ * supply no chat-specific tag. Without a detected bridge, `auto` uses owner.
+ * An invalid setting fails closed to `isolated`.
  */
 export function decideUnmatched(setting: unknown, bridges: readonly string[] = []): UnmatchedDecision {
   if (setting === 'owner') {
-    return { setting, mode: 'owner', bridges: [], reason: 'unmatchedSessions=owner: unmatched sessions use the private owner scope' }
+    return { setting, mode: 'owner', bridges: [], reason: 'unmatchedSessions=owner · 未匹配的会话使用主人的私有作用域。 / Unmatched sessions use the private owner scope.' }
   }
   if (setting === 'auto') {
     return bridges.length > 0
-      ? { setting, mode: 'isolated', bridges: [...bridges], reason: `unmatchedSessions=auto with chat bridge ${bridges.join(', ')} loaded: unmatched sessions are isolated; map your own sessions to owner with a rule` }
-      : { setting, mode: 'owner', bridges: [], reason: 'unmatchedSessions=auto and no chat bridge loaded: unmatched sessions use the private owner scope' }
+      ? { setting, mode: 'isolated', bridges: [...bridges], reason: `unmatchedSessions=auto (${bridges.join(', ')}) · 已加载聊天桥接，未匹配的会话各自隔离。要访问主人记忆，请用规则将自己的会话映射到 owner。 / A chat bridge is loaded. Unmatched sessions are isolated. Map your own sessions to owner to access owner memory.` }
+      : { setting, mode: 'owner', bridges: [], reason: 'unmatchedSessions=auto · 未检测到已知聊天桥接，未匹配的会话可以读取主人记忆。 / No recognized chat bridge was detected. Unmatched sessions use the private owner scope and can read owner memory.' }
   }
   if (setting === 'isolated') {
-    return { setting, mode: 'isolated', bridges: [], reason: 'unmatchedSessions=isolated: unmatched sessions are isolated' }
+    return { setting, mode: 'isolated', bridges: [], reason: 'unmatchedSessions=isolated · 未匹配的会话各自隔离。 / Unmatched sessions are isolated.' }
   }
-  return { setting: 'isolated', mode: 'isolated', bridges: [], reason: `unmatchedSessions ${JSON.stringify(setting)} is not recognised; unmatched sessions are isolated` }
+  return { setting: 'isolated', mode: 'isolated', bridges: [], reason: `unmatchedSessions=${JSON.stringify(setting)} · 设置值无效，未匹配的会话各自隔离。 / Unrecognized setting. Unmatched sessions are isolated.` }
 }
 
 /** Whether the session may see owner-private memory: only an owner decision marked private. */

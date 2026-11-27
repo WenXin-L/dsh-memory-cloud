@@ -48,7 +48,7 @@ export function clipMiddle(text: string, maxChars: number): string {
   const head = sliceHead(text, headChars).trimEnd()
   const tail = sliceTail(text, maxChars - headChars).trimStart()
   const omitted = text.length - head.length - tail.length
-  return `${head}\n[… ${omitted} chars omitted …]\n${tail}`
+  return `${head}\n[… 中间省略了 ${omitted} 个 UTF-16 代码单元 …]\n${tail}`
 }
 
 const CJK_TERMINATORS = new Set(['。', '！', '？', '；', '…', '\n'])

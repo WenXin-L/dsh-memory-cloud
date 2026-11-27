@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Memory cloud",
-    "description": "Brain-like long-term memory: archives every conversation losslessly, writes a gist and a summary for each episode, injects distant gists and recent summaries at session start and on every compaction, and lets the model recall the original text on demand. Compression level is adjustable."
+    "description": "Your conversation can outgrow its window. Memory cloud keeps the original text of captured episodes on disk by scope and prepares short gists and fuller summaries. With memory injection on, recent summaries and distant gists return at session start and after compaction. The model can recall the original text from its own scope. You choose the compression level."
   }
 }

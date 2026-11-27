@@ -163,7 +163,7 @@ function isCalendarDate(year: number, month: number, day: number): boolean {
 export function parseDateBound(text: string, edge: 'from' | 'to'): Millis | undefined {
   const trimmed = text.trim()
   if (trimmed === '') return undefined
-  const invalid = (): RangeError => new RangeError(`invalid date "${text}"`)
+  const invalid = (): RangeError => new RangeError(`日期 ${JSON.stringify(text)} 无效。`)
   const match = DATE_BOUND.exec(trimmed.replace(/[/.]/g, '-'))
   if (match !== null) {
     const year = Number(match[1])

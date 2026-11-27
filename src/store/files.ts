@@ -107,5 +107,5 @@ export async function preserveCopy(file: string, suffix: string): Promise<string
     await writeTextAtomic(target, content)
     return target
   }
-  throw new Error(`memory store: could not find a free name to preserve ${file}`)
+  throw new Error(`memory store: 备份文件名已被占用，本次未创建备份。 / No unused backup name found for ${file}.`)
 }

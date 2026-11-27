@@ -1,72 +1,85 @@
 # Host API (`ctx.memoryCloud`)
 
-The main plugin row provides one host-level Cordis service, `memoryCloud` (`MEMORY_CLOUD_SERVICE`). It carries the engine seam (`budgetFor`, `composer`, `scopeFor`, `isEnabled`, `notifyFallback`; used only by `lib/engine.js`) plus the API below for the settings page and other plugins. Types are exported from the package root (`MemoryCloudApi`, `MemoryCloudService`, `MemoryCloudStatus`, `TakeoverActionResult`, `SettingWriteResult`, …) and declared in `src/runtime/status.ts`.
+[中文](host-api.zh.md) · [English user guide](reference.en.md)
 
-Read it lazily, without `inject`: `ctx.get('memoryCloud')?.api`. Every method resolves (never rejects) with plain JSON data.
+Look up the service when you need it. The main plugin row provides one host-level Cordis service, `memoryCloud` (`MEMORY_CLOUD_SERVICE`). Use `ctx.get('memoryCloud')?.api` without declaring `inject`. Every method on `api` resolves its promise with plain JSON, even on failure. A failed write gets a perfectly good result of its own, `{ok: false, message}`.
 
-The browser reaches the same API through the Typert Remote namespace `memoryCloud` (`src/runtime/remote.ts`): the host provides a `memoryCloudRemote` service bound with `bindTypertRemote()` whose methods carry `@Remote` markers, which DSH's Typert Gateway discovers in SRC mode (no generated artifacts). Endpoints mirror the table below (`memoryCloud/status`, `setLevel`, `setMode`, `takeover`, `restore`) plus `getConfig`/`setConfig` (Remote only, see below); arguments are validated with the shared parsers in `src/client/contract.ts`, results are normalized to plain JSON (non-finite numbers become `null`), and `status()` without a session id describes the most recently active live session. The settings page mounts the matching contribution with `ctx.remote.$mount()` (strict codecs on every client-supplied field). Only owner peers may call it unless DSH's remote-access policy allows the action.
+The settings page and other plugins use the API below. The same service carries `budgetFor`, `composer`, `scopeFor`, `isEnabled` and `notifyFallback` for `lib/engine.js` alone. Import the public types from the package root. `src/runtime/status.ts` declares `MemoryCloudApi`, `MemoryCloudService`, `MemoryCloudStatus` and `TakeoverActionResult`. `SettingWriteResult` is declared in `src/runtime/settings.ts`.
 
-| Method | Result | Notes |
+In the browser, these calls travel through the Typert Remote namespace `memoryCloud`. On the host, `src/runtime/remote.ts` provides `memoryCloudRemote` with a `bindTypertRemote()` binding and `@Remote` method markers. DSH's Typert Gateway discovers these in SRC mode without generating artifacts. The settings page mounts the matching contribution with `ctx.remote.$mount()` and uses strict codecs for every field the client supplies. Owner peers have access by default. Other peers need DSH's remote-access policy to allow the action.
+
+The namespace exposes `memoryCloud/status`, `setLevel`, `setMode`, `takeover` and `restore`, plus the Remote-only `getConfig` and `setConfig` described below. The client codecs and the host's write methods share the argument parsers in `src/client/contract.ts`. Responses go over the wire as plain JSON, with non-finite numbers converted to `null`. Call the Remote's `status()` without an id and it picks the most recently active live non-subagent session, if there is one. On the host, supply a live session id to `api.status()` for that session's details.
+
+| Method | Result | What happens |
 |---|---|---|
-| `api.status(sessionId?)` | `MemoryCloudStatus` | See [Status fields](#status-fields). With the id of a live session it adds `agent`. |
-| `api.setLevel(level)` | `SettingWriteResult` | `level` 1–5. Written through `ctx.settings.update('<row id>', …)`, else `ctx.configEditor.edit` on our row; applies live (volatile field). `{ok: false, message}` when neither service exists or the write is rejected (e.g. a higher layer overrides the row). |
-| `api.setMode(mode)` | `SettingWriteResult` | `auto` \| `engine` \| `assist` \| `off`; same write path. Cached per-agent mode decisions are recomputed on next use. |
-| `api.takeover(presetId = 'standard')` | `TakeoverActionResult` | Profiles with `agentPresets` (web/desktop): config-editor takeover of the preset's compaction group (new sessions only). Profiles without presets (headless/sdk): toggles the shipped-disabled `dsh-memory-cloud-brain-engine` row and `compaction-basic` through `ctx.pluginManager`; expect `restart-required`. |
-| `api.restore(presetId = 'standard')` | `TakeoverActionResult` | Inverse of `takeover`. |
-| `setSessionTags(sessionId, tags)` | `void` | On the service, not on `api` or the Remote. See [Session tags](#session-tags). |
+| `api.status(sessionId?)` | `MemoryCloudStatus` | Returns a host snapshot. With a live session id it can include `agent`. See [Status fields](#status-fields). |
+| `api.setLevel(level)` | `SettingWriteResult` | Saves a level from 1–5 through `ctx.settings.update('<row id>', …)`, or through `ctx.configEditor.edit` on the plugin row when the settings service is absent. This volatile field applies live. If neither writer is available or the write fails, the result is `{ok: false, message}`. A higher layer overriding the row is one such failure. |
+| `api.setMode(mode)` | `SettingWriteResult` | Takes `auto`, `engine`, `assist` or `off` through the same write path. Each agent's cached mode decision is recomputed on its next use. |
+| `api.takeover(presetId = 'standard')` | `TakeoverActionResult` | With `agentPresets` (Web/Desktop), the config editor changes the preset's compaction group for new sessions only. Without presets (headless/SDK), `ctx.pluginManager` switches on the normally disabled `dsh-memory-cloud-brain-engine` row and switches off `compaction-basic` if present. Check `outcome.application` to see whether DSH needs a restart. |
+| `api.restore(presetId = 'standard')` | `TakeoverActionResult` | Undoes takeover on the corresponding preset or host rows. |
+| `setSessionTags(sessionId, tags)` | `void` | A synchronous bridge method. Call it as `ctx.get('memoryCloud')?.setSessionTags(sessionId, tags)`. See [Session tags](#session-tags). |
 
 ## Status fields
 
-`MemoryCloudStatus`:
+Start with `configured` for the settings someone asked for. Read `agent` for the mode and budget a particular session actually got. Both have a place in `MemoryCloudStatus`.
 
-| Field | Meaning |
+| Field | What it tells you |
 |---|---|
-| `storageRoot`, `profile?` | Resolved storage root and DSH profile name. |
-| `configured` | `{level, compactionMode, unmatchedSessions}` as configured. |
-| `firewall?` | The `unmatchedSessions` decision for sessions no scope rule matches, resolved against the chat bridges loaded right now: `{setting, mode: 'owner' \| 'isolated', bridges, reason}`. `bridges` lists the detected bridge plugins that made `auto` isolate; an unrecognized setting resolves to `isolated`. Rendered as its own line in `/memory status` and as the firewall row on the settings page. |
-| `agent?` | Only with a live session: `{sessionId, subagent, scope, mode, capacity, budget, pressure}`. `scope` is that session's `ScopeDecision` (`scope`, `capture`, `private`, `reason`); `mode` the effective mode and reason; `capacity` the routed model, window and reserved output (`known: false` when the model reports no window and the 32K fallback is used, see below); `budget` the resolved level budget; `pressure` 0–1. |
-| `scopes` | Episode counts per scope (`open`/`sealed`/`summarized`/`failed`, pinned, hidden, rollups). |
-| `jobs` | Job-runner stats: queue, running job, daily quota, breaker, totals, last error. |
-| `takeover` | Preset or host-engine takeover state. |
-| `coexistence` | Detected memory, compaction and bridge plugins (`memoryPlugins`, `compactionPlugins`, `bridgePlugins`), tool-name conflicts, zh/en warnings. |
-| `registrations` | Whether the recall tools and `/memory` registered, with problems such as name clashes. |
-| `fallbacks` | Recent non-routine engine hand-backs to compaction-basic (`compose-error`, `compose-timeout`, `shrink-guard`, `empty`, `scope-error`, `budget-error`), newest last, at most 20. |
-| `routineFallbacks?` | Counts per kind of routine hand-backs (`subagent`, `no-capture`, `region-too-small`), which are not listed in `fallbacks` and are logged at debug level only. |
+| `storageRoot`, `profile?` | The resolved storage directory and, when known, the DSH profile name. |
+| `configured` | The configured `{level, compactionMode, unmatchedSessions}`. |
+| `firewall?` | What happens now if no scope rule matches. `unmatchedSessions` is resolved against the recognized bridges currently loaded as `{setting, mode: 'owner' \| 'isolated', bridges, reason}`. `bridges` names the detected plugins that led `auto` to isolate sessions. An unrecognized setting resolves to `isolated`. `/memory status` gives this field its own line, and the settings page shows it in the firewall row. |
+| `agent?` | A live session's `{sessionId, subagent, scope, mode, capacity, budget, pressure}`. `scope` holds its `ScopeDecision` (`scope`, `capture`, `private`, `reason`). `mode` gives the effective mode and reason. `capacity` identifies the routed model, context window and reserved output, with `known: false` for the 32K estimate below. `budget` holds the resolved level budget. `pressure` ranges from 0 to 1. |
+| `scopes` | Episode counts for each scope (`open` / `sealed` / `summarized` / `failed`), plus counts of pinned episodes, hidden episodes and rollups. |
+| `jobs` | Queue, running job, daily quota, circuit breaker, totals and last error from the job runner. |
+| `takeover` | The current preset or host-engine takeover state. |
+| `coexistence` | Detected `memoryPlugins`, `compactionPlugins` and `bridgePlugins`, tool-name conflicts, and warnings in Chinese and English. |
+| `registrations` | Whether the recall tools and `/memory` registered, with reasons for any problems, including name clashes. |
+| `fallbacks` | Up to 20 non-routine hand-backs to compaction-basic, newest last. The kinds are `compose-error`, `compose-timeout`, `shrink-guard`, `empty`, `scope-error` and `budget-error`. |
+| `routineFallbacks?` | Counts the routine hand-backs by kind (`subagent`, `no-capture`, `region-too-small`). These go in the debug log and stay out of `fallbacks`. |
 
-**Fallback window.** When `ctx.llm.resolveModelInfo()` reports no `context.contextWindow` for the routed model (the field is optional in `LlmResolvedModelInfo`), or the lookup fails, the plugin assumes W = 32 768 (`FALLBACK_CONTEXT_WINDOW`, `src/runtime/budget.ts`) for the block, recall limit and status, and reports `capacity.known: false`. The engine maps no level thresholds for such a model and leaves compaction-basic's row config in charge.
+**For an unknown window, the estimate is 32K.** `context.contextWindow` is optional in `LlmResolvedModelInfo`. If `ctx.llm.resolveModelInfo()` omits it for the routed model, or the lookup fails, the plugin assumes W = 32 768 (`FALLBACK_CONTEXT_WINDOW` in `src/runtime/budget.ts`). It uses that estimate for the memory block, recall limit and status, and reports `capacity.known: false`. The engine skips level-threshold mapping for that model. Compaction-basic's row configuration still decides when to compact.
 
 ## Session tags
 
-`setSessionTags(sessionId, tags)` is for chat bridges: routing tags such as `qqbot:<bot>:group:<id>` that `scopeRules` match, next to the synthetic `preset:`, `cwd:` and `session:` tags (`preset:` names the preset the session runs now, see below). A subagent is resolved through the root session of its delegation chain, whatever its own tags: the resolver follows `parentSession` while the session is a subagent and stops at a parent it does not know.
+A chat bridge calls `setSessionTags(sessionId, tags)` on the service with its routing tags, for example `qqbot:<bot>:group:<id>`. Send the whole set you want the session to have. `scopeRules` can match those tags alongside the synthetic `preset:`, `cwd:` and `session:` tags. `preset:` names the preset in use now. For a subagent, the resolver follows `parentSession` up the delegation chain while the current session is a subagent. The root session determines the scope regardless of the child's tags. The lookup stops if it reaches an unknown parent.
 
-- The call replaces the session's tags. Tags are trimmed; empty ones, ones longer than 1024 characters and any beyond 64 are dropped. An empty list clears them.
-- Tags are kept per DSH app for the whole process, so they survive a reload of this plugin in the same process (an upgrade, a `storageRoot` edit, re-enabling it) while the session is live. They are dropped on `session/disposed`.
-- The cached descriptor is dropped and the scope is resolved again. A session with no live agent is described from `ctx.sessions`, or else from its previous descriptor, so the comparison below still applies to it. If the session had been described before and its decision (scope and capture flag) is unchanged, nothing else happens.
-- If the decision changed, the injector drops the session's cached block and pending pack (`injector.rescope`) but remembers which scope's block it showed, the composer forgets the session, and `capture.rescope(sessionId)` seals the open episode in the old scope (reason `end`); the next event is captured under the new scope. A tag set before the session was first described changes nothing else, because there is no earlier decision.
-- The same path runs on `agent-preset/selected`: the session is described again with the preset it runs now (`agentPresets.presetForSession`, else the event's preset), and its cached compaction mode is recomputed.
-- An owner memory block already in the context stays there until the next compaction; because the injector remembers which scope's block it showed, it logs a warning when the session no longer may read it.
+- **Replacing tags.** Each call replaces the session's previous bridge tags. Entries are trimmed and empty entries discarded. Tags over 1024 characters are dropped. The session keeps at most 64 distinct tags. An empty list clears them.
+- **Keeping tags.** Tags belong to the DSH app for this process. A live session keeps them across a plugin reload, including an upgrade, a `storageRoot` edit or re-enabling the plugin. `session/disposed` removes them.
+- **Checking the new decision.** The plugin discards the cached descriptor and resolves the scope again. With no live agent it uses `ctx.sessions`, then the previous descriptor if needed. If both the scope and capture flag match the previous decision, the check ends there. Setting tags before the first description gives it no previous decision to act on.
+- **Moving to another decision.** `injector.rescope` drops the cached block and pending pack but remembers which scope's block it showed. The composer forgets the session, and `capture.rescope(sessionId)` seals the open episode in the old scope with reason `end`. The next captured event uses the new scope.
+- **Switching presets.** `agent-preset/selected` takes the same path. The descriptor uses the current preset from `agentPresets.presetForSession`, or the preset in the event. The plugin also recomputes the cached compaction mode.
+- **Reading an existing context.** An owner block already in context stays until the next compaction. If the new decision removes access, the injector remembers that it showed the block and logs a warning.
 
-Sessions that no rule matches follow `unmatchedSessions` (`auto` \| `owner` \| `isolated`, default `auto`): `owner` uses the private owner scope, `isolated` gives each session its own scope `session-<hash>` (a subagent shares the scope of its delegation chain's root session), and `auto` isolates while a known chat-bridge plugin (`dsh-qq-bridge`, `dsh-qqbot`, `dsh-qq-rooms`, `dsh-onebot-qq`, `dsh-wechat`) is loaded and uses owner otherwise. Only a decision that is `owner` **and** private may read owner memory (`canReadScope` / `mayUseOwnerMemory` in `src/scope/guard.ts`): a rule whose template is literally `owner`, or an owner decision of `unmatchedSessions`. A template that merely expands to `owner` gets `owner-<hash>`.
+When no rule matches, `unmatchedSessions` chooses a scope. `owner` uses the private owner scope. `isolated` gives each session a `session-<hash>` scope, shared by subagents of that delegation root. The default, `auto`, isolates sessions while it detects any of `dsh-qq-bridge`, `dsh-qqbot`, `dsh-qq-rooms`, `dsh-onebot-qq` or `dsh-wechat`. Otherwise it chooses owner.
+
+Reading owner memory requires a decision that is both `owner` and private. A rule whose template literally says `owner` can grant it, as can an owner decision from `unmatchedSessions`. If a template only expands to `owner`, the resolver assigns `owner-<hash>`. `canReadScope` and `mayUseOwnerMemory` in `src/scope/guard.ts` enforce these checks.
 
 ## Live settings (Remote only)
 
-The Remote also serves the plugin's live (`.volatile()`) settings for the page's Advanced section. These two endpoints exist only on the Remote, not on `ctx.memoryCloud.api`:
+The settings page's Advanced section uses two extra endpoints for `.volatile()` fields. Call them on the Remote. `ctx.memoryCloud.api` exposes the host methods in the first table.
 
-| Remote endpoint | Result | Notes |
+| Remote endpoint | Result | What to send or expect |
 |---|---|---|
-| `memoryCloud/getConfig()` | `ConfigView` | `{config, defaults}`: every live field as plain values (`level`, `compactionMode`, `idleMinutes`, `idleCompactRatio`, `halfLifeDays`, `maxEpisodeTokens`, `captureReasoning`, `summarizer.{provider, model, reasoningEffort}`, `overrides`, `scopeRules`, `unmatchedSessions`) and the schema defaults. |
-| `memoryCloud/setConfig(patch)` | `SettingWriteResult` | `patch` (`ConfigPatch`) holds only the fields to change. `summarizer` lists just its changed fields; `overrides` and `scopeRules` replace the whole value (an override left out falls back to the level's own value). |
+| `memoryCloud/getConfig()` | `ConfigView` | Returns `{config, defaults}` with current values and schema defaults. The live fields are `level`, `compactionMode`, `idleMinutes`, `idleCompactRatio`, `halfLifeDays`, `maxEpisodeTokens`, `captureReasoning`, `summarizer.{provider, model, reasoningEffort}`, `overrides`, `scopeRules` and `unmatchedSessions`. |
+| `memoryCloud/setConfig(patch)` | `SettingWriteResult` | Send the fields you want to change in `patch` (`ConfigPatch`). Within `summarizer`, send just the changed fields. Supplying `overrides` or `scopeRules` replaces that whole value. Leave an override out of its replacement and that field goes back to the level's own value. |
 
-`setConfig` checks the patch before writing anything and answers `{ok: false, message}` for:
-- unknown or non-volatile fields (e.g. `storageRoot`);
-- values the Config schema rejects once merged with the live config;
-- scope rules with an empty pattern or scope;
-- scope rules whose template uses a `$n` beyond the number of wildcards (`*`, `?`) in the pattern.
+`setConfig` checks the entire patch before writing. It returns `{ok: false, message}` if any of the following checks fail.
 
-Writes go through the same row as `setLevel`. With `ctx.settings`, object values use `settings.mutate()` set-path ops (`update()` deep-merges and could not drop an override), and other values use `update()`. Without `ctx.settings`, `ctx.configEditor.edit` sets each path inside the row's whole current `config`. Values apply live, and cached per-agent mode decisions are recomputed. Injection and recall resolve the scope on every step; capture resolves it again at the next turn start, and when it changed seals the open episode in the old scope.
+- Every field must be a known live setting. For example, `storageRoot` takes effect at startup.
+- After the patch is merged with the live config, the values must satisfy the Config schema.
+- A scope rule needs both a nonempty pattern and a nonempty scope.
+- A `$n` in the scope template must refer to a wildcard (`*` or `?`) that exists in the pattern.
+
+Writes use the same row as `setLevel`. Where `ctx.settings` supports `settings.mutate()`, a patch with an object value uses set-path operations. A deep merge with `update()` would keep an override the caller meant to remove. Other writes use `update()`. Without `ctx.settings`, `ctx.configEditor.edit` sets each path in the row's whole current `config`.
+
+A saved setting is live. Its readers pick it up at their own times. Cached per-agent mode decisions are recomputed. Injection and recall check the scope at every step. Capture checks it at the next turn start and seals any open episode in the old scope if the decision moved.
 
 ## Takeover results
 
-`TakeoverActionResult` is `{kind: 'preset', ok: true, action: 'applied' | 'unchanged' | 'restored', preset?, warning?}`, `{kind: 'preset', ok: false, code, message}` (`code` ∈ `no-config-editor`, `preset-not-found`, `no-compaction-group`, `overridden`, `edit-failed`), or `{kind: 'host', ok, outcome: HostEngineOutcome}`.
+Read `kind` first. A preset can already be in the requested state, which counts as a successful answer. `TakeoverActionResult` has three shapes.
 
-Takeover records live in `<storage root>/takeover.json`, keyed by DSH profile name; `refreshAfterUpgrade()` runs once, detached, about 10 s after the plugin starts.
+- Preset success returns `{kind: 'preset', ok: true, action: 'applied' | 'unchanged' | 'restored', preset?, warning?}`.
+- Preset failure returns `{kind: 'preset', ok: false, code, message}`. The `code` is one of `no-config-editor`, `preset-not-found`, `no-compaction-group`, `overridden` or `edit-failed`.
+- A host-engine action returns `{kind: 'host', ok, outcome: HostEngineOutcome}`.
+
+The plugin files its takeover records by DSH profile name in `<storage root>/takeover.json`. About 10 s after startup it runs `refreshAfterUpgrade()` once in the background.

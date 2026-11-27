@@ -317,7 +317,7 @@ describe('createMemoryPacker distant tier overflow', () => {
     for (const candidate of week1) expect(result.text).not.toContain(gistLine(candidate))
     expect(result.text).toContain(`#${week1[0]?.meta.id} … #${week1[9]?.meta.id}（10 段）`)
     expect(result.stats.omitted).toBe(0)
-    expect(result.text).not.toContain('段更早记忆')
+    expect(result.text).not.toContain('段记忆没装进来')
     expect(estimator.estimate(result.text)).toBeLessThanOrEqual(room + FRAME)
   })
 
@@ -370,7 +370,7 @@ describe('createMemoryPacker distant tier overflow', () => {
 
     const distant = section(result.text, MEMORY_BLOCK_HEADINGS.distant)
     expect(distant[0]).toBe(omittedNotice(6))
-    expect(result.text.split('段更早记忆')).toHaveLength(2)
+    expect(result.text.split('段记忆没装进来')).toHaveLength(2)
     expect(estimator.estimate(result.text)).toBeLessThanOrEqual(room + FRAME)
   })
 
@@ -390,20 +390,20 @@ describe('createMemoryPacker distant tier overflow', () => {
     const fresh = episode(41, { daysAgo: 1, importance: 9 })
     const roomy = packer.pack(input({ candidates: [open, pending, fresh], budget: budget({ distant: 1000 + FRAME }) }))
     const distant = section(roomy.text, MEMORY_BLOCK_HEADINGS.distant)
-    expect(distant).toEqual([gistLine(fresh), `- 另有 2 段对话尚未整理（${stamp(pending.meta.startedAt).slice(0, 10)}~${stamp(open.meta.startedAt).slice(0, 10)}）`])
+    expect(distant).toEqual([gistLine(fresh), `- ${stamp(pending.meta.startedAt).slice(0, 10)}~${stamp(open.meta.startedAt).slice(0, 10)} 的 2 段对话还没有总结或摘要。`])
     expect(roomy.text).not.toContain(pending.meta.id)
     expect(roomy.text).not.toContain(open.meta.id)
     expect(ids(roomy, 'gist')).toEqual([fresh.meta.id, 'pending'])
     expect(roomy.stats.omitted).toBe(0)
 
     const single = packer.pack(input({ candidates: [pending], budget: budget({ distant: 1000 + FRAME }) }))
-    expect(section(single.text, MEMORY_BLOCK_HEADINGS.distant)).toEqual([`- 另有 1 段对话尚未整理（${stamp(pending.meta.startedAt).slice(0, 10)}）`])
+    expect(section(single.text, MEMORY_BLOCK_HEADINGS.distant)).toEqual([`- ${stamp(pending.meta.startedAt).slice(0, 10)} 的 1 段对话还没有总结或摘要。`])
 
     const tight = packer.pack(input({
       candidates: [open, pending, fresh],
       budget: budget({ distant: HEADING.distant + cost(gistLine(fresh)) + 2 + FRAME }),
     }))
-    expect(tight.text).not.toContain('尚未整理')
+    expect(tight.text).not.toContain('还没有总结或摘要')
     expect(tight.stats.omitted).toBe(3)
     expect(tight.text).toContain(omittedNotice(3))
     expect(estimator.estimate(tight.text)).toBeLessThanOrEqual(HEADING.distant + cost(gistLine(fresh)) + 2 + FRAME)
@@ -610,7 +610,7 @@ describe('createMemoryPacker determinism and limits', () => {
           expect(result.stats.tokens).toBe(tokens)
           if (run.maxChars !== undefined) expect(result.text.length).toBeLessThanOrEqual(run.maxChars)
           expect(result.text.startsWith(MEMORY_BLOCK_OPEN)).toBe(true)
-          expect(result.text.includes('段更早记忆')).toBe(result.stats.omitted > 0)
+          expect(result.text.includes('段记忆没装进来')).toBe(result.stats.omitted > 0)
           if (result.stats.omitted > 0) expect(result.text).toContain(omittedNotice(result.stats.omitted))
           expect(ids(result, 'summary').length).toBeGreaterThan(0)
           seen.runs++

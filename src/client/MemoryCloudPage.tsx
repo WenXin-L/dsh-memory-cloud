@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useId } from 'react'
 import type { ReactNode } from 'react'
 import type { CompactionMode, CompressionLevel } from '../contracts.ts'
 import { AdvancedSettings } from './AdvancedSettings.tsx'
@@ -82,6 +82,7 @@ export function MemoryCloudPage(props: MemoryCloudPageProps): ReactNode {
   const { t, reload } = props
   const snapshot = props.useStatus(value => value)
   const language = languageOf(props.useLocale(value => value.active))
+  const modeHintId = useId()
   useEffect(() => { reload() }, [reload])
   if (props.view !== 'page') return null
 
@@ -94,13 +95,13 @@ export function MemoryCloudPage(props: MemoryCloudPageProps): ReactNode {
       <section className="mcb-section" data-section="status">
         <div className="mcb-head">
           <h4 className="mcb-title">{t('statusTitle')}</h4>
-          <button type="button" className="mcb-button" disabled={snapshot.refreshing || pending !== undefined} onClick={reload}>
+          <button type="button" className="mcb-button" title={t('refreshHint')} disabled={snapshot.refreshing || pending !== undefined} onClick={reload}>
             {snapshot.refreshing ? t('refreshing') : t('refresh')}
           </button>
         </div>
         {failure === undefined ? null : <p className="mcb-notice" data-tone="error" role="status">{t('loadFailed', { code: failure.code, message: failure.message })}</p>}
         {status === undefined
-          ? (failure === undefined ? <p className="mcb-hint">{t('loading')}</p> : null)
+          ? (failure === undefined ? <p className="mcb-hint" role="status">{t('loading')}</p> : null)
           : <FactList facts={statusFacts(status, t, language)} />}
       </section>
 
@@ -125,7 +126,7 @@ export function MemoryCloudPage(props: MemoryCloudPageProps): ReactNode {
 
       <section className="mcb-section" data-section="mode">
         <h4 className="mcb-title">{t('modeTitle')}</h4>
-        <div className="mcb-options" role="radiogroup" aria-label={t('modeTitle')}>
+        <div className="mcb-options" role="radiogroup" aria-label={t('modeTitle')} aria-describedby={modeHintId}>
           {modeOptions(t).map(option => (
             <Option
               key={option.mode}
@@ -138,12 +139,13 @@ export function MemoryCloudPage(props: MemoryCloudPageProps): ReactNode {
             />
           ))}
         </div>
+        <p className="mcb-hint" id={modeHintId}>{t('modeSaveHint')}</p>
         <Notice snapshot={snapshot} actions={['mode']} t={t} />
       </section>
 
       <section className="mcb-section" data-section="takeover">
         <h4 className="mcb-title">{t('takeoverTitle')}</h4>
-        <p className="mcb-text">{t(controls?.kind === 'host' ? 'takeoverHostExplain' : 'takeoverExplain')}</p>
+        <p className="mcb-text">{t(controls === undefined ? 'takeoverAwaitStatus' : controls.kind === 'host' ? 'takeoverHostExplain' : 'takeoverExplain')}</p>
         <div className="mcb-actions">
           <button
             type="button"
@@ -162,7 +164,7 @@ export function MemoryCloudPage(props: MemoryCloudPageProps): ReactNode {
             disabled={locked || controls?.canRestore !== true}
             onClick={props.restore}
           >
-            {pending === 'restore' ? t('working') : t('restoreAction')}
+            {pending === 'restore' ? t('restoring') : t('restoreAction')}
           </button>
         </div>
         <Notice snapshot={snapshot} actions={['takeover', 'restore']} t={t} />

@@ -133,6 +133,11 @@ describe('tool definitions', () => {
       for (const definition of definitions) {
         assertObjectJsonSchema(definition.parameters)
         assertSupportedJsonSchema(definition.output.schema)
+        expect(definition.description).toMatch(/^\p{Script=Han}/u)
+        expect(definition.description).toMatch(/\b[A-Z][a-z]+ /)
+        for (const parameter of Object.values(definition.parameters.properties ?? {})) {
+          expect(parameter).toMatchObject({ description: expect.stringMatching(/\p{Script=Han}/u) })
+        }
         expect(typeof definition.output.render).toBe('function')
       }
 
@@ -200,8 +205,11 @@ describe('memory_search', () => {
       const { value, text } = await call<SearchOutput>(MEMORY_TOOL_NAMES.search, { query: '猫粮品牌', limit: 1 })
       expect(value.total).toBe(2)
       expect(value.hits.map(hit => hit.id)).toEqual([CAT])
-      expect(text).toContain('2 memories match "猫粮品牌", showing 1:')
+      expect(text).toContain('查询“猫粮品牌”找到 2 个片段，本次列出 1 个。')
       expect(text).toContain(`#${CAT} 2026-11-01 聊了猫粮品牌，决定买皇家猫粮。`)
+      const empty = await call<SearchOutput>(MEMORY_TOOL_NAMES.search, { query: 'never-mentioned-topic' })
+      expect(empty.value).toEqual({ total: 0, hits: [] })
+      expect(empty.text).toBe('查询“never-mentioned-topic”没有找到片段。')
     })
   })
 
@@ -231,7 +239,7 @@ describe('memory_search', () => {
       expect(value.total).toBe(6)
       expect(value.hits.length).toBeGreaterThan(0)
       expect(value.hits.length).toBeLessThan(6)
-      expect(value.notice).toMatch(/left out to save context/)
+      expect(value.notice).toBe(`受回忆预算限制，另有 ${6 - value.hits.length} 个命中片段未列出。可细化查询词或缩小日期范围。`)
     })
   })
 })
@@ -266,7 +274,7 @@ describe('memory_read', () => {
       expect(gist.value.text).toBe('聊了猫粮品牌，决定买皇家猫粮。')
       const pending = await call<ReadOutput>(MEMORY_TOOL_NAMES.read, { id: RAW })
       expect(pending.value.text).toBe('')
-      expect(pending.value.notice).toMatch(/not summarized yet \(status: sealed\).*level "raw"/)
+      expect(pending.value.notice).toBe('未找到摘要或一行总结（片段状态 sealed）。可用 level="raw" 查原文。')
       expect(store.calls.updateEpisode).toEqual([])
     })
   })
@@ -276,15 +284,15 @@ describe('memory_read', () => {
       const first = await call<ReadOutput>(MEMORY_TOOL_NAMES.read, { id: `#${RAW}`, level: 'raw', limit: 4 })
       expect(first.value).toMatchObject({ id: RAW, level: 'raw', offset: 0, count: 4, total: 7, hiddenRecords: 9, nextOffset: 4, truncated: false })
       expect(first.value.text).toBe(conversationLines.slice(0, 4).join('\n'))
-      expect(first.text).toContain('[records 0–3 of 7; next offset 4; 9 system records hidden]')
+      expect(first.text).toContain('[记录 0–3，共 7 条，下一页 offset=4，另有 9 条系统记录未计入]')
       const last = await call<ReadOutput>(MEMORY_TOOL_NAMES.read, { id: RAW, level: 'raw', offset: 4, limit: 10 })
       expect(last.value).toMatchObject({ offset: 4, count: 3, total: 7, hiddenRecords: 9 })
       expect(last.value.text).toBe(conversationLines.slice(4).join('\n'))
       expect(last.value.nextOffset).toBeUndefined()
-      expect(last.text).toContain('[records 4–6 of 7; end; 9 system records hidden]')
+      expect(last.text).toContain('[记录 4–6，共 7 条，已到末页，另有 9 条系统记录未计入]')
       const past = await call<ReadOutput>(MEMORY_TOOL_NAMES.read, { id: RAW, level: 'raw', offset: 50 })
       expect(past.value).toMatchObject({ offset: 50, count: 0, total: 7, text: '' })
-      expect(past.value.notice).toBe('Offset 50 is past the end of this episode (7 conversation records).')
+      expect(past.value.notice).toBe('从 offset=50 起没有记录，当前共 7 条对话记录。')
       expect(store.calls.updateEpisode.map(call => call.patch)).toEqual([{ strength: 2, lastRecalledAt: NOW }])
     })
   })
@@ -322,7 +330,7 @@ describe('memory_read', () => {
       expect(system.value.text).toContain('#114 10:07 user[tool-registry]: Tools changed: find_shop was added.')
       expect(system.value.text).toContain('#111 10:06 [compaction/summary-error]: {"error":"summary failed"}')
       expect(pageSeqs(system.value.text)).toEqual([102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 113, 114, 116])
-      expect(system.text).toContain('[records 0–15 of 16; end]')
+      expect(system.text).toContain('[记录 0–15，共 16 条，已到末页]')
     })
   })
 
@@ -376,8 +384,8 @@ describe('memory_read', () => {
       }])
       const { value, text } = await call<ReadOutput>(MEMORY_TOOL_NAMES.read, { id: quiet, level: 'raw' })
       expect(value).toMatchObject({ text: '', offset: 0, count: 0, total: 0, hiddenRecords: 2 })
-      expect(value.notice).toBe('This episode has no conversation records; includeSystem: true shows its 2 system records.')
-      expect(text).toContain('[no records from 0 of 0; end; 2 system records hidden]')
+      expect(value.notice).toBe('本片段没有对话记录。设 includeSystem=true 可查看其 2 条系统记录中有正文的部分。')
+      expect(text).toContain('[从 offset=0 起无记录，共 0 条，已到末页，另有 2 条系统记录未计入]')
       expect(store.calls.updateEpisode).toEqual([])
     })
   })
@@ -405,13 +413,13 @@ describe('memory_note', () => {
         expect(apply.mock.calls).toEqual([[request]])
         expect(value).toMatchObject({ usedChars: entries.join('\n').length, changed: request.action !== 'list' })
         expect(value.limitChars).toBeGreaterThan(0)
-        expect(text).toContain(`${value.usedChars}/${value.limitChars} characters`)
+        expect(text).toContain(`（${value.usedChars}/${value.limitChars} 个 Unicode 码点）`)
         if (request.action === 'list') {
           expect(value.entries).toEqual([])
-          expect(text).toContain('No entries.')
+          expect(text).toContain('这里还没有记下偏好。')
         } else {
           expect(value).not.toHaveProperty('entries')
-          expect(text).toContain('updated')
+          expect(text).toContain('主人偏好笔记已更新')
           expect(text).not.toContain('English')
         }
       }
@@ -425,7 +433,7 @@ describe('memory_note', () => {
         { action: 'replace', oldText: 'API names', text: corrected },
         { action: 'remove', oldText: ` ${original}` },
       ]) {
-        await expect(call(MEMORY_TOOL_NAMES.note, request)).rejects.toThrow(/exact/i)
+        await expect(call(MEMORY_TOOL_NAMES.note, request)).rejects.toThrow(/未找到与 oldText 完全一致的笔记.*list.*No exact oldText match/)
       }
       const listed = await call<ProfileNoteResult>(MEMORY_TOOL_NAMES.note, { action: 'list' })
       expect(listed.value.entries).toEqual([original])
@@ -461,7 +469,7 @@ describe('memory_note', () => {
         state.decision = decision
         for (const request of requests) {
           const resolve = vi.mocked(deps.scopeFor).mockClear()
-          await expect(call(MEMORY_TOOL_NAMES.note, request)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_DENIED' })
+          await expect(call(MEMORY_TOOL_NAMES.note, request)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_DENIED', message: expect.stringContaining('仅限主人的私有会话') })
           expect(resolve.mock.calls).toEqual([[agent]])
         }
       }
@@ -479,7 +487,7 @@ describe('memory_note', () => {
       const listed = await call<ProfileNoteResult>(MEMORY_TOOL_NAMES.note, list)
       expect(listed.value).toMatchObject({ entries: [original], usedChars: original.length, changed: false })
       for (const request of mutations) {
-        await expect(call(MEMORY_TOOL_NAMES.note, request)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_DENIED' })
+        await expect(call(MEMORY_TOOL_NAMES.note, request)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_DENIED', message: expect.stringMatching(/关闭记忆捕获.*只可用 list/) })
       }
       expect(apply.mock.calls).toEqual([[list]])
       expect(deps.scopeFor).toHaveBeenCalledTimes(requests.length)
@@ -513,7 +521,7 @@ describe('memory_event', () => {
     await withHarness(async ({ call }) => {
       const saved = await call<{ revision: number }>(name, create)
       expect(saved.value).toEqual({ revision: 1 })
-      expect(saved.text).toBe('Saved at revision 1.')
+      expect(saved.text).toBe('事件已保存，修订号 1。')
       const initial = await call<EventFindOutput>(name, find)
       const entry = { subject, text: original, revision: 1, updatedAt: NOW }
       expect(initial.value).toEqual({ total: 1, entries: [entry] })
@@ -526,14 +534,14 @@ describe('memory_event', () => {
         { ...create, text: 'Stale overwrite', expectedRevision: firstRevision },
         { action: 'remove', subject, expectedRevision: firstRevision },
       ]) {
-        await expect(call(name, stale)).rejects.toMatchObject({ code: 'MEMORY_REVISION_CONFLICT', message: expect.stringMatching(/find.*revision/i) })
+        await expect(call(name, stale)).rejects.toMatchObject({ code: 'MEMORY_REVISION_CONFLICT', message: expect.stringMatching(/本次变更未写入.*find.*同一 subject.*最新 revision.*expectedRevision/) })
       }
       const current = await call<EventFindOutput>(name, find)
       expect(current.value).toEqual({ total: 1, entries: [{ ...entry, text: correction, revision: 2 }] })
       const remove = { action: 'remove', subject, expectedRevision: current.value.entries[0]!.revision }
       const removed = await call(name, remove)
-      expect(removed).toEqual({ value: { removed: true }, text: 'Removed.' })
-      expect((await call(name, remove)).value).toEqual({ removed: false })
+      expect(removed).toEqual({ value: { removed: true }, text: '已删除该主题的事件记忆。' })
+      expect(await call(name, remove)).toEqual({ value: { removed: false }, text: '未找到该主题，本次未删除事件记忆。' })
       expect((await call(name, find)).value).toEqual({ total: 0, entries: [] })
     })
   })
@@ -570,7 +578,7 @@ describe('memory_event', () => {
       expect(listed.value.entries).toEqual([{ subject, text: 'Room decision.', revision: 1, updatedAt: NOW }])
       const remove = { action: 'remove', subject, expectedRevision: 1 }
       for (const mutation of [{ ...create, expectedRevision: 1 }, remove]) {
-        await expect(call(name, mutation)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_DENIED' })
+        await expect(call(name, mutation)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_DENIED', message: expect.stringMatching(/已关闭记忆捕获.*只可用 find 查询/) })
       }
       state.decision = { ...ownerDecision, private: false }
       for (const args of [find, create, remove]) {
@@ -620,10 +628,10 @@ describe('memory_event', () => {
         expect(found.value.entries[0]).toMatchObject({ subject, revision: 1, text: expect.stringMatching(/…$/u) })
       }
       state.limit = 1
-      await expect(call(name, find)).rejects.toMatchObject({ code: 'MEMORY_RECALL_PAUSED' })
+      await expect(call(name, find)).rejects.toMatchObject({ code: 'MEMORY_RECALL_PAUSED', message: expect.stringContaining('不足以返回含命中总数的 JSON') })
       state.pressure = 0.95
       const list = vi.spyOn(deps.events, 'list')
-      await expect(call(name, find)).rejects.toMatchObject({ code: 'MEMORY_RECALL_PAUSED', message: expect.stringContaining('95% full') })
+      await expect(call(name, find)).rejects.toMatchObject({ code: 'MEMORY_RECALL_PAUSED', message: expect.stringContaining('上下文已用 95%，回忆查询已暂停') })
       expect(list).not.toHaveBeenCalled()
       expect((await call(name, { ...create, text: correction, expectedRevision: 1 })).value).toEqual({ revision: 2 })
       expect((await call(name, { action: 'remove', subject, expectedRevision: 2 })).value).toEqual({ removed: true })
@@ -633,11 +641,13 @@ describe('memory_event', () => {
   it('distinguishes store validation and capacity errors without echoing private input', async () => {
     await withHarness(async ({ call, deps }) => {
       const invalid = call(name, { ...create, text: 'private\nfact' })
-      await expect(invalid).rejects.toMatchObject({ code: 'MEMORY_INVALID_ARGS', message: expect.stringMatching(/line/) })
+      await expect(invalid).rejects.toMatchObject({ code: 'MEMORY_INVALID_ARGS', message: expect.stringMatching(/subject 和 text.*控制字符.*非空单行/) })
       await expect(invalid).rejects.not.toThrow(/private|events\.json/)
+      const badSubject = call(name, { action: 'remove', subject: 'private\nsubject', expectedRevision: 1 })
+      await expect(badSubject).rejects.toMatchObject({ code: 'MEMORY_INVALID_ARGS', message: 'subject 须为不含控制字符的非空单行，最多 80 个 Unicode 码点。' })
       vi.spyOn(deps.events, 'save').mockRejectedValueOnce(new EventMemoryError('/private/scope', 'capacity'))
       const full = call(name, create)
-      await expect(full).rejects.toMatchObject({ code: 'MEMORY_EVENT_CAPACITY' })
+      await expect(full).rejects.toMatchObject({ code: 'MEMORY_EVENT_CAPACITY', message: expect.stringMatching(/已达上限.*修订已有主题/) })
       await expect(full).rejects.not.toThrow(/private|events\.json/)
     })
   })
@@ -651,7 +661,7 @@ describe('memory_event', () => {
         state.decision = { ...ownerDecision, scope: group, private: false }
         return entries
       })
-      await expect(call(name, find)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_DENIED' })
+      await expect(call(name, find)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_DENIED', message: expect.stringMatching(/记忆范围已改变.*未返回/) })
       expect((await call<EventFindOutput>(name, find)).value.entries).toEqual([])
     })
   })
@@ -687,6 +697,7 @@ describe('context pressure', () => {
       state.limit = 1000
       const full = await call<ReadOutput>(MEMORY_TOOL_NAMES.read, { id: LONG })
       expect(full.value.truncated).toBe(true)
+      expect(full.value.text.endsWith('\n…[已截断]')).toBe(true)
       const fullTokens = estimator.estimate(full.value.text)
       expect(fullTokens).toBeLessThanOrEqual(1000)
       expect(fullTokens).toBeGreaterThan(600)
@@ -699,7 +710,7 @@ describe('context pressure', () => {
       state.pressure = 0.8
       const swapped = await call<ReadOutput>(MEMORY_TOOL_NAMES.read, { id: CAT, level: 'raw' })
       expect(swapped.value.level).toBe('summary')
-      expect(swapped.value.notice).toContain('Raw text is unavailable at 80% context use')
+      expect(swapped.value.notice).toBe('上下文已用 80%，本次 raw 请求暂不读原文，先查摘要。')
       expect(swapped.value.offset).toBeUndefined()
 
       state.pressure = 0.95
@@ -710,7 +721,7 @@ describe('context pressure', () => {
       ] as const) {
         const failure = call(name, args)
         await expect(failure).rejects.toBeInstanceOf(HarnessError)
-        await expect(failure).rejects.toMatchObject({ code: 'MEMORY_RECALL_PAUSED', message: expect.stringContaining('95% full') })
+        await expect(failure).rejects.toMatchObject({ code: 'MEMORY_RECALL_PAUSED', message: expect.stringContaining('上下文已用 95%，回忆查询已暂停') })
       }
       const pinned = await call<FlagOutput>(MEMORY_TOOL_NAMES.pin, { id: CAT })
       expect(pinned.value.pinned).toBe(true)
@@ -755,7 +766,7 @@ describe('pin, hide and timeline', () => {
     await withHarness(async ({ call, store }) => {
       const hidden = await call<FlagOutput>(MEMORY_TOOL_NAMES.hide, { id: CAT })
       expect(hidden.value).toEqual({ id: CAT, pinned: false, hidden: true, changed: true })
-      expect(hidden.text).toContain('nothing was deleted')
+      expect(hidden.text).toBe(`#${CAT} 已从记忆块和搜索结果中隐藏。未删除任何数据，用 memory_unhide 可恢复可见。`)
       const search = await call<SearchOutput>(MEMORY_TOOL_NAMES.search, { query: '猫粮品牌' })
       expect(search.value.hits.map(hit => hit.id)).toEqual([SHOPPING])
       await expect(call(MEMORY_TOOL_NAMES.read, { id: CAT })).rejects.toMatchObject({ code: 'MEMORY_HIDDEN' })
@@ -773,7 +784,7 @@ describe('pin, hide and timeline', () => {
       expect((await call<FlagOutput>(MEMORY_TOOL_NAMES.pin, { id: TRIP })).value.changed).toBe(true)
       const repeat = await call<FlagOutput>(MEMORY_TOOL_NAMES.pin, { id: TRIP })
       expect(repeat.value).toEqual({ id: TRIP, pinned: true, hidden: false, changed: false })
-      expect(repeat.text).toContain('(no change)')
+      expect(repeat.text).toBe(`#${TRIP} 已固定（原已如此）。`)
       expect((await call<FlagOutput>(MEMORY_TOOL_NAMES.unpin, { id: TRIP })).value.pinned).toBe(false)
       expect(store.calls.updateEpisode).toHaveLength(2)
     })
@@ -790,7 +801,7 @@ describe('pin, hide and timeline', () => {
       expect(hashed.value).toEqual(value)
       const edge = await call<TimelineOutput>(MEMORY_TOOL_NAMES.timeline, { id: RAW })
       expect(edge.value.entries.map(entry => entry.id)).toEqual([TRIP, TS, LONG, RAW])
-      expect(edge.value.entries.at(-1)?.gist).toBe('(sealed; not summarized yet)')
+      expect(edge.value.entries.at(-1)?.gist).toBe('(sealed，暂无总结)')
     })
   })
 
@@ -812,7 +823,7 @@ describe('pin, hide and timeline', () => {
       const { value } = await call<TimelineOutput>(MEMORY_TOOL_NAMES.timeline, { id: TRIP, before: 5, after: 5 })
       expect(value.entries.some(entry => entry.current)).toBe(true)
       expect(value.entries.length).toBeLessThan(6)
-      expect(value.notice).toMatch(/left out to save context/)
+      expect(value.notice).toBe(`受回忆预算限制，已省略 ${6 - value.entries.length} 个相邻片段。`)
     })
   })
 })

@@ -84,6 +84,18 @@ function TextInput({ value, placeholder, error, disabled, numeric, onChange }: {
   )
 }
 
+function RuleButton({ t, index, action, disabled, onClick, children }: {
+  readonly t: Translate
+  readonly index: number
+  readonly action: 'advScopeUp' | 'advScopeDown' | 'advScopeRemove'
+  readonly disabled: boolean
+  readonly onClick: () => void
+  readonly children: string
+}): ReactNode {
+  const label = t('advRuleAction', { rule: t('advScopeRule', { index }), action: t(action) })
+  return <button type="button" className="mcb-button" title={label} aria-label={label} disabled={disabled} onClick={onClick}>{children}</button>
+}
+
 /** Collapsible editor for every live setting besides level and mode; loads on first open. */
 export function AdvancedSettings({ t, useConfig, loadConfig, saveConfig, level, budget }: AdvancedSettingsProps): ReactNode {
   const snapshot = useConfig(value => value)
@@ -110,7 +122,7 @@ export function AdvancedSettings({ t, useConfig, loadConfig, saveConfig, level, 
           </div>
         )
       }
-      return <p className="mcb-hint">{t('advLoading')}</p>
+      return <p className="mcb-hint" role="status">{t('advLoading')}</p>
     }
     const { draft } = form
     const reading = readDraft(draft, form.base, t)
@@ -220,9 +232,9 @@ export function AdvancedSettings({ t, useConfig, loadConfig, saveConfig, level, 
                         />
                       </Field>
                       <div className="mcb-rule-actions">
-                        <button type="button" className="mcb-button" title={t('advScopeUp')} aria-label={t('advScopeUp')} disabled={locked || index === 0} onClick={() => { update(current => moveRule(current, rule.id, -1)) }}>↑</button>
-                        <button type="button" className="mcb-button" title={t('advScopeDown')} aria-label={t('advScopeDown')} disabled={locked || index === draft.scopeRules.length - 1} onClick={() => { update(current => moveRule(current, rule.id, 1)) }}>↓</button>
-                        <button type="button" className="mcb-button" title={t('advScopeRemove')} aria-label={t('advScopeRemove')} disabled={locked} onClick={() => { update(current => removeRule(current, rule.id)) }}>×</button>
+                        <RuleButton t={t} index={index + 1} action="advScopeUp" disabled={locked || index === 0} onClick={() => { update(current => moveRule(current, rule.id, -1)) }}>↑</RuleButton>
+                        <RuleButton t={t} index={index + 1} action="advScopeDown" disabled={locked || index === draft.scopeRules.length - 1} onClick={() => { update(current => moveRule(current, rule.id, 1)) }}>↓</RuleButton>
+                        <RuleButton t={t} index={index + 1} action="advScopeRemove" disabled={locked} onClick={() => { update(current => removeRule(current, rule.id)) }}>×</RuleButton>
                       </div>
                     </li>
                   ))}
@@ -266,6 +278,7 @@ export function AdvancedSettings({ t, useConfig, loadConfig, saveConfig, level, 
               type="button"
               className="mcb-button"
               data-action="discard-config"
+              title={t('advDiscardHint')}
               disabled={locked || !reading.changed}
               onClick={() => { setForm({ draft: draftOf(view.config), base: view.config }) }}
             >

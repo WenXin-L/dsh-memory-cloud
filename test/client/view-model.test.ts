@@ -113,21 +113,21 @@ describe('mode', () => {
     expect(view).toEqual({
       mode: 'assist',
       configured: 'auto',
-      reason: "auto: DSH's engine owns compaction, so assist mode is used. Take over compaction to use engine mode in new sessions.",
+      reason: "In auto, DSH owns compaction here, so memory cloud uses assist mode. After takeover, new sessions can use its engine if Memory Cloud detects no other known compaction plugin.",
       context: 'session sess-123 · configured Auto',
     })
   })
 
   it('predicts new sessions from the takeover state without a live session', () => {
-    expect(modeView(wireStatus(), tZh)).toMatchObject({ mode: 'assist', context: '新会话预计（当前没有活跃会话）· 配置：自动' })
+    expect(modeView(wireStatus(), tZh)).toMatchObject({ mode: 'assist', context: '新会话预计使用此模式 · 暂无活跃会话 · 配置为自动' })
     const takenOver: TakeoverReport = { kind: 'preset', editable: true, presets: [{ entryId: 'preset-standard', presetId: 'standard', state: 'active', recorded: true }] }
     expect(modeView(wireStatus({ takeover: takenOver }), tEn)).toMatchObject({
       mode: 'engine',
-      reason: "auto: this plugin's engine owns compaction and no other compaction plugin is loaded.",
+      reason: "In auto, memory cloud uses its engine because it owns compaction and it detects no other known compaction plugin.",
     })
     expect(modeView(wireStatus({ takeover: takenOver, coexistence: detectCoexistence(['dsh-taskfold/plugins']) }), tEn)).toMatchObject({
       mode: 'assist',
-      reason: 'auto: another compaction plugin is loaded (dsh-taskfold), so assist mode is used.',
+      reason: 'In auto, memory cloud uses assist mode because another compaction plugin is loaded (dsh-taskfold).',
     })
     expect(modeView(wireStatus({ configured: { level: 3, compactionMode: 'engine', unmatchedSessions: 'auto' } }), tEn)).toMatchObject({ mode: 'assist', configured: 'engine' })
     expect(modeView(wireStatus({ configured: { level: 3, compactionMode: 'off', unmatchedSessions: 'auto' } }), tEn)).toMatchObject({ mode: 'off' })
@@ -153,9 +153,9 @@ describe('status facts', () => {
       key: 'firewall',
       label: 'Unmatched sessions',
       tag: { text: 'owner scope', tone: 'neutral' },
-      lines: [{ text: 'No chat-bridge plugin is loaded, so sessions no scope rule matches use the private owner scope (unmatchedSessions: auto).' }],
+      lines: [{ text: 'No recognized chat bridge was detected. Unmatched sessions use the private owner scope and can read owner memory (unmatchedSessions: auto).' }],
     })
-    expect(texts(fact(facts, 'coexistence'))).toEqual(['No other memory or compaction plugin detected.'])
+    expect(texts(fact(facts, 'coexistence'))).toEqual(['Memory cloud has taken attendance. No other memory or compaction plugins were detected.'])
     expect(texts(fact(facts, 'registrations'))).toEqual(['recall tools: registered · /memory: registered'])
     expect(texts(fact(facts, 'storage'))).toEqual(['/home/u/.dsh/memory-cloud · profile web'])
   })
@@ -164,16 +164,16 @@ describe('status facts', () => {
     const bridged = fact(statusFacts(wireStatus({ firewall: decideUnmatched('auto', ['qqbot']) }), tZh, 'zh'), 'firewall')
     expect(bridged.tag).toEqual({ text: '隔离', tone: 'info' })
     expect(texts(bridged)).toEqual([
-      '未匹配任何作用域规则的会话各自使用隔离作用域，看不到主人的记忆（unmatchedSessions：auto）。',
+      '每个未匹配规则的会话各有隔离作用域，无权读取主人记忆（unmatchedSessions：auto）。',
       '已加载聊天桥接插件：qqbot。',
-      '请添加作用域规则（如 cwd:/你的目录/* → owner），让你自己的会话保留你的记忆。',
+      '要让自己的会话读取主人记忆，请只匹配你独用的标签，例如 cwd:/your/dir/* → owner。',
     ])
     expect(texts(fact(statusFacts(wireStatus({ firewall: decideUnmatched('isolated') }), tEn, 'en'), 'firewall'))).toEqual([
-      'Sessions no scope rule matches each get an isolated scope and never see owner memory (unmatchedSessions: isolated).',
-      'Add a scope rule (e.g. cwd:/your/dir/* → owner) so your own sessions keep your memory.',
+      'Each unmatched session gets an isolated scope without access to owner memory (unmatchedSessions: isolated).',
+      'Give your own sessions access to owner memory with a rule for a tag only they use, such as cwd:/your/dir/* → owner.',
     ])
     expect(texts(fact(statusFacts(wireStatus({ firewall: decideUnmatched('owner') }), tEn, 'en'), 'firewall'))).toEqual([
-      'Sessions no scope rule matches use the private owner scope (unmatchedSessions: owner).',
+      'Unmatched sessions use the private owner scope and can read owner memory (unmatchedSessions: owner).',
     ])
     const { firewall: _firewall, ...legacy } = wireStatus()
     expect(statusFacts(legacy, tEn, 'en').some(item => item.key === 'firewall')).toBe(false)
@@ -181,7 +181,7 @@ describe('status facts', () => {
 
   it('asks for a live session before showing a resolved budget', () => {
     const budget = fact(statusFacts(wireStatus(), tEn, 'en'), 'budget')
-    expect(budget.lines).toEqual([{ text: 'Shown for a live session. Open or continue a conversation, then refresh.', muted: true }])
+    expect(budget.lines).toEqual([{ text: 'The budget is holding a seat for a live session. Open or resume a conversation, then refresh to see its numbers.', muted: true }])
   })
 
   it('handles the wire form of an unlimited quota and shows job trouble', () => {
@@ -198,7 +198,7 @@ describe('status facts', () => {
     expect(lines).toEqual([
       { text: 'queue 1 · today 7 · succeeded 3 · failed 0 · running 2026-W47' },
       { text: 'circuit breaker open after 4 consecutive failures', tone: 'warn' },
-      { text: 'last error — summarize:owner/ep-1: timeout', tone: 'error' },
+      { text: 'Last job failure (summarize:owner/ep-1) — timeout', tone: 'error' },
     ])
   })
 
@@ -216,7 +216,7 @@ describe('status facts', () => {
       { text: '回忆工具：未注册 · /memory 命令：已注册', tone: 'error' },
       { text: '回忆工具注册失败：duplicate tool memory_search', tone: 'error' },
     ])
-    expect(texts(fact(zhFacts, 'fallback'))).toEqual(['compose-failed（summarize，会话 sess-abc），共 1 次', 'timeout'])
+    expect(texts(fact(zhFacts, 'fallback'))).toEqual(['compose-failed（summarize，会话 sess-abc）· 最近记录 1 次回退', 'timeout'])
   })
 
   it('describes takeover states for presets and host rows', () => {
@@ -225,14 +225,17 @@ describe('status facts', () => {
     })
     expect(fact(statusFacts(wireStatus({ takeover: preset('active') }), tEn, 'en'), 'takeover').lines).toEqual([{ text: 'preset standard: taken over', tone: 'success' }])
     expect(texts(fact(statusFacts(wireStatus({ takeover: preset('customized', 'edited') }), tZh, 'zh'), 'takeover')))
-      .toEqual(['预设 standard：已接管但被手动修改，不再跟随 DSH 升级 — edited'])
+      .toEqual(['预设 standard：含有自定义设置。要继续跟随 DSH 升级，请从未经修改的内置预设重新接管。 — edited'])
     expect(texts(fact(statusFacts(wireStatus({ takeover: { kind: 'preset', editable: false, presets: [] } }), tEn, 'en'), 'takeover')))
-      .toEqual(['This process has no config editor (not started with dsh --profile), so presets cannot be taken over.'])
+      .toEqual(['Taking over a preset needs the config editor. Start DSH with dsh --profile to make it available.'])
+    const unavailable: TakeoverReport = { kind: 'preset', editable: false, presets: [], error: 'profile /test unavailable' }
+    expect(texts(fact(statusFacts(wireStatus({ takeover: unavailable }), tEn, 'en'), 'takeover')))
+      .toEqual(['Reading the compaction takeover state failed — profile /test unavailable'])
     const host: TakeoverReport = {
       kind: 'host', editable: true, presets: [],
       host: { engine: { entryId: 'dsh-memory-cloud-brain-engine', moduleName: 'dsh-memory-cloud-brain/engine', enabled: false }, active: false },
     }
-    expect(texts(fact(statusFacts(wireStatus({ takeover: host }), tEn, 'en'), 'takeover'))).toEqual(['Host level: compaction-basic still compacts.'])
+    expect(texts(fact(statusFacts(wireStatus({ takeover: host }), tEn, 'en'), 'takeover'))).toEqual(['The memory engine is installed. It does not currently own host-level compaction.'])
   })
 })
 
@@ -266,28 +269,35 @@ describe('action notices', () => {
   it('words takeover and restore outcomes', () => {
     expect(noticeView({ action: 'takeover', result: { kind: 'preset', ok: true, action: 'applied', warning: 'home patch also edits presets' } }, tEn)).toEqual({
       tone: 'success',
-      lines: ['Compaction taken over. New sessions use the memory engine; open sessions keep their current engine.', 'Note: home patch also edits presets'],
+      lines: ['Memory cloud has taken over this preset’s compaction group. New sessions using the preset get the memory engine. Open sessions keep their current engine.', 'Takeover record or preset details — home patch also edits presets'],
     })
-    expect(noticeView({ action: 'takeover', result: { kind: 'preset', ok: true, action: 'unchanged' } }, tZh)).toEqual({ tone: 'info', lines: ['已经接管，无需改动。'] })
-    expect(noticeView({ action: 'restore', result: { kind: 'preset', ok: true, action: 'unchanged' } }, tEn)).toEqual({ tone: 'info', lines: ['Nothing to restore.'] })
-    expect(noticeView({ action: 'restore', result: { kind: 'preset', ok: true, action: 'restored' } }, tZh)).toEqual({ tone: 'success', lines: ['已还原为 DSH 默认压缩，新会话生效。'] })
+    expect(noticeView({ action: 'takeover', result: { kind: 'preset', ok: true, action: 'unchanged' } }, tZh)).toEqual({ tone: 'info', lines: ['记忆云已接管压缩。接管这件事只需要发生一次。'] })
+    expect(noticeView({ action: 'restore', result: { kind: 'preset', ok: true, action: 'unchanged' } }, tEn)).toEqual({ tone: 'info', lines: ['There is no memory cloud takeover to restore on this preset.'] })
+    expect(noticeView({ action: 'restore', result: { kind: 'preset', ok: true, action: 'restored' } }, tZh)).toEqual({ tone: 'success', lines: ['此预设的压缩接管已撤销，对使用该预设的新会话生效。'] })
     expect(noticeView({ action: 'restore', result: { kind: 'preset', ok: false, code: 'overridden', message: 'home patch overrides it' } }, tEn))
-      .toEqual({ tone: 'error', lines: ['Restore failed (overridden): home patch overrides it'] })
+      .toEqual({ tone: 'error', lines: ['Restoring compaction failed (overridden) — home patch overrides it'] })
   })
 
   it('words host engine outcomes with restart reasons', () => {
     const outcome = { ok: true, application: 'restart-required' as const, restartReasons: ['no-hmr'], steps: [], message: '已启用引擎行' }
     expect(noticeView({ action: 'takeover', result: { kind: 'host', ok: true, outcome } }, tEn)).toEqual({
       tone: 'success',
-      lines: ['Plugin manager: 已启用引擎行', 'Restart DSH to apply: no-hmr'],
+      lines: ['The plugin manager saved the host takeover. Restart DSH to apply it.', 'DSH restart reason — no-hmr'],
+    })
+    expect(noticeView({ action: 'restore', result: { kind: 'host', ok: true, outcome: { ...outcome, restartReasons: [] } } }, tZh)).toEqual({
+      tone: 'success', lines: ['插件管理器已保存宿主级压缩还原设置。重启 DSH 后生效。'],
+    })
+    const failed = { ...outcome, ok: false, application: 'failed' as const, restartReasons: [], message: 'read-only row /profile/engine' }
+    expect(noticeView({ action: 'takeover', result: { kind: 'host', ok: false, outcome: failed } }, tEn)).toEqual({
+      tone: 'error', lines: ['Taking over compaction failed (failed) — Plugin manager — read-only row /profile/engine'],
     })
   })
 
   it('words setting writes and transport failures', () => {
-    expect(noticeView({ action: 'level', level: 4, result: { ok: true, via: 'settings' } }, tEn)).toEqual({ tone: 'success', lines: ['Level 4 saved; it applies live.'] })
-    expect(noticeView({ action: 'mode', mode: 'engine', result: { ok: true, via: 'config-editor' } }, tZh)).toEqual({ tone: 'success', lines: ['已切换到引擎模式，会话在下次使用时重新判断模式。'] })
-    expect(noticeView({ action: 'mode', mode: 'engine', result: { ok: false, message: 'overridden by --patch' } }, tEn)).toEqual({ tone: 'error', lines: ['Not saved: overridden by --patch'] })
+    expect(noticeView({ action: 'level', level: 4, result: { ok: true, via: 'settings' } }, tEn)).toEqual({ tone: 'success', lines: ['Compression level 4 is saved and already on duty.'] })
+    expect(noticeView({ action: 'mode', mode: 'engine', result: { ok: true, via: 'config-editor' } }, tZh)).toEqual({ tone: 'success', lines: ['压缩模式已保存（引擎）。会话下次使用时会重新选择实际模式。'] })
+    expect(noticeView({ action: 'mode', mode: 'engine', result: { ok: false, message: 'overridden by --patch' } }, tEn)).toEqual({ tone: 'error', lines: ['Saving the compaction mode failed — overridden by --patch'] })
     expect(noticeView({ action: 'takeover', failure: { code: 'remote-access/denied', message: 'access denied' } }, tEn))
-      .toEqual({ tone: 'error', lines: ['Request failed (remote-access/denied): access denied'] })
+      .toEqual({ tone: 'error', lines: ['Taking over compaction failed (remote-access/denied) — access denied'] })
   })
 })

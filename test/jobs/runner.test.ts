@@ -223,7 +223,7 @@ describe('createJobRunner', () => {
     expect(signal?.reason).toBeInstanceOf(JobTimeoutError)
     expect(h.calls).toEqual(['e1', 'e2'])
     expect(h.job('e1')).toMatchObject({ attempts: 1, notBefore: T0 + 10 * SECOND + 30 * SECOND })
-    expect(h.meta('e1')).toMatchObject({ status: 'failed', attempts: 1, lastError: 'timed out after 10000 ms' })
+    expect(h.meta('e1')).toMatchObject({ status: 'failed', attempts: 1, lastError: '后台总结任务已超时 / Background job timed out after 10000 ms.' })
     expect(runner.stats().totals).toMatchObject({ timedOut: 1, failed: 1, succeeded: 1 })
   })
 

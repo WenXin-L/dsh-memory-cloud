@@ -33,23 +33,23 @@ export interface MemoryCommandDeps {
 export const SUBCOMMANDS = ['status', 'level', 'mode', 'compact-now', 'summarize-now', 'rebuild', 'takeover', 'restore', 'backfill'] as const
 
 export const USAGE = [
-  '/memory status — 模式、档位与预算、片段统计、后台任务、接管与共存情况',
-  '/memory level <1-5> — 压缩档位：1 保留最多上下文，5 最少',
-  '/memory mode <auto|engine|assist|off> — 运行模式',
-  '/memory compact-now — 立即整理（压缩）当前会话',
-  '/memory summarize-now — 封存当前尾部并立即处理后台总结队列',
-  '/memory rebuild — 按当前档位的长度重新生成本作用域的总结/摘要',
-  '/memory takeover [preset] — 让本插件接管压缩（默认 standard 预设）',
-  '/memory restore [preset] — 还原宿主默认压缩',
-  '/memory backfill — 导入安装前的旧会话',
+  '/memory status — 让记忆云报个数。查看实际模式、压缩档位、预算、作用域、记忆片段、后台队列、接管和共存情况。',
+  '/memory level <1-5> — 保存压缩档位，立即生效。1 保留最多上下文，5 保留最少。',
+  '/memory mode <auto|engine|assist|off> — 保存压缩模式。会话下次使用时重新选择实际模式。',
+  '/memory compact-now — 立即尝试压缩当前会话的上下文。',
+  '/memory summarize-now — 封存当前会话尚未封存的尾部，唤起后台总结队列。用 /memory status 查看进度。',
+  '/memory rebuild — 把本作用域已总结的记忆片段重新排队，按当前压缩档位生成摘要和总结。新文本写好前继续使用旧文本。',
+  '/memory takeover [preset] — 写入预设压缩组，让记忆云接管压缩。默认预设为 standard，对新会话生效。无预设时改动宿主插件配置，可能需要重启。',
+  '/memory restore [preset] — 撤销指定预设的压缩接管，默认预设为 standard。对使用该预设的新会话生效。无预设时还原宿主插件配置，可能需要重启。',
+  '/memory backfill — 导入安装前旧会话的功能尚未实现。此命令会说明原因。',
 ].join('\n')
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function settingResult(result: SettingWriteResult, success: string): CommandResult {
-  return result.ok ? { kind: 'success', text: success } : { kind: 'error', text: `保存失败：${result.message}` }
+function settingResult(result: SettingWriteResult, setting: string, success: string): CommandResult {
+  return result.ok ? { kind: 'success', text: success } : { kind: 'error', text: `保存${setting}失败 — ${result.message}` }
 }
 
 function outcome(result: CommandOutcome): CommandResult {
@@ -69,13 +69,17 @@ export async function runMemoryCommand(
         return { kind: 'success', text: renderStatus(await deps.status(invocation.agent)) }
       case 'level': {
         const level = Number(args[0])
-        if (!(COMPRESSION_LEVELS as readonly number[]).includes(level)) return { kind: 'error', text: `用法：/memory level <1-5>（当前输入 ${JSON.stringify(args[0] ?? '')}）` }
-        return settingResult(await deps.setLevel(level), `压缩档位已设为 ${level}，立即生效`)
+        if (!(COMPRESSION_LEVELS as readonly number[]).includes(level)) {
+          return { kind: 'error', text: `压缩档位需要 1 到 5 的整数。当前输入为 ${JSON.stringify(args[0] ?? '')}。用法：/memory level <1-5>` }
+        }
+        return settingResult(await deps.setLevel(level), '压缩档位', `压缩档位 ${level} 已保存，即刻上岗。`)
       }
       case 'mode': {
         const mode = (args[0] ?? '').toLowerCase()
-        if (!(COMPACTION_MODES as readonly string[]).includes(mode)) return { kind: 'error', text: `用法：/memory mode <${COMPACTION_MODES.join('|')}>` }
-        return settingResult(await deps.setMode(mode), `运行模式已设为 ${mode}，对新的判断立即生效（/memory status 查看实际模式）`)
+        if (!(COMPACTION_MODES as readonly string[]).includes(mode)) {
+          return { kind: 'error', text: `压缩模式不识别输入 ${JSON.stringify(args[0] ?? '')}。用法：/memory mode <${COMPACTION_MODES.join('|')}>` }
+        }
+        return settingResult(await deps.setMode(mode), '压缩模式', `压缩模式 ${mode} 已保存。会话下次使用时重新选择实际模式，用 /memory status 查看结果。`)
       }
       case 'compact-now':
         return outcome(await deps.compactNow(invocation.agent, invocation.signal))
@@ -111,7 +115,7 @@ export function registerMemoryCommand(ctx: Context, deps: MemoryCommandDeps): ()
     const running = new Set<Promise<CommandResult>>()
     const unregister = ctx.commands.register({
       name: COMMAND_NAME,
-      description: '记忆云：状态、档位、模式、整理与接管（/memory help）',
+      description: '让记忆云报个数，或调整压缩档位与模式。运行 /memory help 查看整理、总结和接管压缩命令。',
       input: { hint: SUBCOMMANDS.join(' | ') },
       handler: (invocation) => {
         const task = runMemoryCommand(deps, invocation)

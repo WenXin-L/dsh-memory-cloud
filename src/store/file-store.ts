@@ -480,7 +480,7 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
       updatedAt: clock.now(),
     })
     await healSidecars(scope, recovered.filter(entry => entry.derived).map(entry => entry.meta))
-    warn(`memory store: index of scope ${scope} lacked ${recovered.length} episode(s) and ${missingRollups.length} rollup(s) found on disk; added them`)
+    warn(`memory store: 已从磁盘补全索引 / Restored missing index entries (${scope}) · 片段 / episodes: ${recovered.length} · 时期总结 / rollups: ${missingRollups.length}`)
     return written
   }
 
@@ -499,9 +499,10 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
     await mirrorAll(scope, closed)
     const written = await writeIndex(scope, index)
     await healSidecars(scope, derived)
+    const recovered = `已从磁盘重建索引 / Index rebuilt from disk (${scope}) · 片段 / episodes: ${index.episodes.length}`
     warn(read.kind === 'corrupt'
-      ? `memory store: index of scope ${scope} was corrupt (${read.reason}); rebuilt ${index.episodes.length} episode(s) from disk and kept the old file as ${kept ?? '(vanished)'}`
-      : `memory store: index of scope ${scope} was missing; rebuilt ${index.episodes.length} episode(s) from disk`)
+      ? `memory store: 索引已损坏 / Corrupt index (${read.reason}). ${recovered}. ${backupNotice(kept)}`
+      : `memory store: 索引缺失 / Missing index. ${recovered}.`)
     return written
   }
 
@@ -539,7 +540,7 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
     assertScopeId(scope)
     assertEpisodeId(id)
     const meta = (await readIndex(scope)).episodes.find(entry => entry.id === id)
-    if (meta === undefined) throw new Error(`memory store: unknown episode ${id} in scope ${scope}`)
+    if (meta === undefined) throw new Error(`memory store: 当前作用域中没有这个片段 / unknown episode ${id} in scope ${scope}`)
     return meta
   }
 
@@ -554,7 +555,7 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
       const index = await loadIndexLocked(scope)
       const position = index.episodes.findIndex(meta => meta.id === id)
       const current = index.episodes[position]
-      if (current === undefined) throw new Error(`memory store: unknown episode ${id} in scope ${scope}`)
+      if (current === undefined) throw new Error(`memory store: 当前作用域中没有这个片段 / unknown episode ${id} in scope ${scope}`)
       const next = await change(current)
       if (next === current) return current
       if (!isEpisodeMeta(next, scope)) throw new TypeError(`memory store: the update would leave episode ${id} invalid`)
@@ -638,7 +639,7 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
     return mutateEpisode(scope, id, meta => {
       if (meta.status !== 'open') {
         if (meta.sealReason === seal.reason && meta.seqRange.last === seal.lastSeq) return meta
-        throw new Error(`memory store: episode ${id} is already ${meta.status}`)
+        throw new Error(`memory store: 片段已结束，本次封存条件与已有记录不同。 / Episode ${id} is already ${meta.status} with different seal parameters.`)
       }
       const { owner: _owner, ...rest } = meta as StoredEpisodeMeta
       return {
@@ -667,7 +668,7 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
       throw new TypeError('memory store: invalid summary tokens or provenance')
     }
     return mutateEpisode(scope, id, async meta => {
-      if (meta.status === 'open') throw new Error(`memory store: episode ${id} is still open; seal it before writing its summary`)
+      if (meta.status === 'open') throw new Error(`memory store: 请先封存片段，再写入摘要。 / Episode ${id} is still open. Seal it before writing its summary.`)
       const dir = episodeDir(scope, id)
       const shared = {
         id: meta.id,
@@ -793,14 +794,14 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
   async function writeRollup(scope: ScopeId, entry: RollupEntry, text: string): Promise<void> {
     assertScopeId(scope)
     const label = JSON.stringify(entry.id)
-    if (entry.scope !== scope) throw new TypeError(`memory store: rollup ${label} belongs to scope ${entry.scope}, not ${scope}`)
+    if (entry.scope !== scope) throw new TypeError(`memory store: 时期总结的作用域与写入目标不符。 / Rollup ${label} belongs to scope ${entry.scope}. Write target: ${scope}.`)
     if (!isRollupEntry(entry, scope)) throw new TypeError(`memory store: invalid rollup entry ${label}`)
     if (!isString(text)) throw new TypeError('memory store: rollup text must be a string')
     const stored = structuredClone(entry)
     await withLock(scope, async () => {
       const index = await loadIndexLocked(scope)
       const clash = index.rollups.find(existing => existing.file === stored.file && existing.id !== stored.id)
-      if (clash !== undefined) throw new Error(`memory store: ${stored.file} already holds rollup ${clash.id}`)
+      if (clash !== undefined) throw new Error(`memory store: 两份时期总结使用同一文件名，本次写入已停止。 / ${stored.file} already holds rollup ${clash.id}. Write stopped.`)
       await replaceKeepingPrevious(join(scopeDir(scope), ...stored.file.split('/')), renderRollupFile(stored, text))
       const position = index.rollups.findIndex(existing => existing.id === stored.id)
       const rollups = position < 0 ? [...index.rollups, stored] : index.rollups.with(position, stored)
@@ -894,7 +895,7 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
       } else {
         if (read.kind === 'corrupt') {
           const kept = await preserveCopy(statePath, `corrupt-${clock.now()}`)
-          warn(`memory store: ${STATE_FILE} was corrupt (${read.reason}); rebuilt it from the indexes and kept the old file as ${kept ?? '(vanished)'}`)
+          warn(`memory store: 状态文件已损坏，将从索引重建。 / Rebuilding corrupt ${STATE_FILE} from the indexes (${read.reason}). ${backupNotice(kept)}`)
         }
         current = await deriveState(read.kind === 'corrupt')
       }
@@ -938,6 +939,12 @@ export function createFileMemoryStore(options: FileMemoryStoreOptions): FileMemo
     rebuildIndex,
     claimEpisode,
   }
+}
+
+function backupNotice(kept: string | undefined): string {
+  return kept === undefined
+    ? '备份时已找不到原文件。 / Original file missing at backup time.'
+    : `原文件备份 / Original file backup: ${kept}`
 }
 
 function episodeNumber(id: string): number {

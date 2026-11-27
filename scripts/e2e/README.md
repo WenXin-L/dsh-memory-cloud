@@ -1,35 +1,47 @@
 # End-to-end check in a real DSH host
 
-`run-e2e.mjs` installs DeepSeek Harness into a throwaway directory, installs this repo into the `headless` and `web` profiles the way a user would (`dsh plugin --profile <p> add <repo>`), and runs [seven scenarios](#scenarios) against a scripted fake model. No API key or account is used: every DSH process runs with an empty environment (only `PATH`, a fake `HOME`, a throwaway `DSH_HOME`, `DSH_TELEMETRY_DISABLED=1`).
+[中文](README.zh.md) · [English user guide](../../docs/reference.en.md#development)
+
+DSH gets a fresh home and a model that has rehearsed its lines. `run-e2e.mjs` installs DeepSeek Harness in a temporary directory, adds this checkout to the `headless` and `web` profiles with `dsh plugin --profile <p> add <repo>`, and runs [seven scenarios](#scenarios) against the scripted fake model. No API key or account is needed. Each DSH process gets its own clean environment containing only `PATH`, a temporary `HOME` and `DSH_HOME`, `DSH_TELEMETRY_DISABLED=1` and `TERM=dumb`.
+
+Use Node.js ≥ 24.9 and put `pnpm` on `PATH`. DSH calls it when `plugin add` runs. From a checkout with its build dependencies installed, run the full check. The harness builds the plugin and exits with `0` when every check passes. Allow about 3 minutes for the checks themselves. A fresh DSH download takes additional time.
 
 ```sh
-pnpm build                              # or let the harness build
-node scripts/e2e/run-e2e.mjs            # ~3 min; exit 0 when every check passes
-node scripts/e2e/run-e2e.mjs --keep     # keep the temp dir (logs/, dsh-home/) for inspection
-node scripts/e2e/run-e2e.mjs --only s1,s2 --skip-build --dsh-dir /path/with/node_modules/.bin/dsh
+node scripts/e2e/run-e2e.mjs
 ```
 
-Requirements: Node ≥ 24.9, `pnpm` on `PATH` (DSH's `plugin add` shells out to it), and npm registry access only for `npm install @deepseek-ai/dsh@0.2.2-rc.5` (about 1.2 GB; runs with your normal npm environment and cache, retried once; override the version with `DSH_VERSION`, or skip the install with `--dsh-dir` pointing at an existing install). `--dsh-dir` must contain `node_modules/.bin/dsh` and a hoisted `node_modules/@deepseek-ai/dsh-llm`; the harness writes its test plugins into a `.mcb-e2e-plugins-<pid>` subdirectory there and removes it afterwards.
+To have the logs and test home waiting for you afterwards, ask for them at the start.
+
+```sh
+node scripts/e2e/run-e2e.mjs --keep
+```
+
+The step that needs npm registry access is `npm install @deepseek-ai/dsh@0.2.2-rc.5` (about 1.2 GB). npm uses your usual environment and cache and retries once after a failure. Set `DSH_VERSION` to change the version, or skip that install with `--dsh-dir`. Pass the installation directory containing both `node_modules/.bin/dsh` and a hoisted `node_modules/@deepseek-ai/dsh-llm`. To build once and run just the first two scenarios, replace `/path/to/dsh-install` with that directory.
+
+```sh
+pnpm build
+node scripts/e2e/run-e2e.mjs --only s1,s2 --skip-build --dsh-dir /path/to/dsh-install
+```
 
 ## What it generates
 
-Two test-only plugins are serialized from functions inside `run-e2e.mjs` into the temp dir and loaded with `--patch`; they are never part of the repo's package:
+The harness serializes two functions from `run-e2e.mjs` into test plugins and loads them with `--patch`. They live in `.mcb-e2e-plugins-<pid>` under the DSH installation, including an installation you supply. Neither plugin ships in the package.
 
-- **fake LLM** (`e2e-fake-llm`): registers adapter `fake`, overrides `agent-default-model` to `fake/fake-1`, reports usage with a CJK-aware estimate. Conversation directives in the user prompt: `[[long:N]]` (reply of N chars), `[[steps:K:N]]` (K tool-call steps of N chars each, to cross thresholds mid-turn), `[[search:q]]`, `[[read:<id>]]`, `[[raw:<id>]]`. Summarizer requests (`purpose: memory-cloud-summarize`) get a `memory_save` call (transcript mode) or a fenced JSON answer (replay mode), built from `【事实：…】` markers; `summarize: throw | garbage` simulates failures; `purpose: compaction` gets a `DEFAULT-SUMMARY` text.
-- **probe** (`e2e-probe`): exports every log line to `logs/dsh.log`, records unhandled rejections and exit codes, runs host-API actions at the end of a headless turn (`takeover`, `restore`, `level5`, `status`, `checkpoints`, `cmd:/memory …`), and in the web profile drives sessions host-side through `sessionController.create/prompt`.
+- **Fake LLM (`e2e-fake-llm`).** Registers the `fake` adapter, points `agent-default-model` at `fake/fake-1` and estimates token usage with a CJK-aware count. In a user prompt, `[[long:N]]` asks for N characters of filler. `[[steps:K:N]]` requests K tool-call steps with N characters of filler each. The harness uses these steps to reach a compaction threshold mid-turn. `[[search:q]]`, `[[read:<id>]]` and `[[raw:<id>]]` ask for search, summary and original text. For episode requests with `purpose: memory-cloud-summarize`, the model takes facts from `【事实：…】` markers and returns a `memory_save` call in transcript mode or fenced JSON in replay mode. A rollup gets text. Set `summarize: throw` or `summarize: garbage` to make the summarizer fail on cue. A request with `purpose: compaction` gets text beginning with `DEFAULT-SUMMARY`.
+- **Probe (`e2e-probe`).** Exports every log line to `logs/dsh.log` and records unhandled rejections and exit codes. At the end of a headless turn it can run host-side actions including `takeover`, `restore`, `level5`, `status`, `checkpoints` and `cmd:/memory …`. Under the web profile it creates sessions and sends prompts from the host with `sessionController.create/prompt`.
 
 ## Scenarios
 
-Scenarios run in order and share one DSH home. s1 performs the headless takeover that s3 and s4 rely on (both check compactions by the memory engine), and s2 continues s1's session, so an `--only` subset should include s1 whenever it includes s2, s3 or s4.
+The scenarios run in order and share one DSH home. Earlier work has a way of showing up in later checks. When selecting with `--only`, include s1 with s2, s3 or s4. It supplies the session that s2 continues and the headless takeover that s3 and s4 exercise. Include s3 for s4 as well, to leave level 5 in effect. Run s1 before s5 to give it a headless takeover to restore. Include s6 for s7 so there is a Web process and a pair of sessions to shut down.
 
-| | Checks |
+| Scenario | What the harness checks |
 |---|---|
-| s1 | headless takeover through `api.takeover()` (plugin manager, `restart-required`); a 16-step turn on a 32K window triggers ≥ 2 pressure compactions by the memory engine; checkpoints in the session log carry `<memory-cloud>`; compaction episodes have `raw.jsonl`/`summary.md`/`gist.md` and no second (background) summarizer call; the session continues over later turns |
-| s2 | new session: one injected block per request, distant entries as gists and recent ones as summaries; `memory_read #id` returns the summary, `level: raw` the original prompt, `memory_search` finds it |
-| s3 | `api.setLevel(5)` through `ctx.settings`; on a 128K window the threshold drops 104 857 → 32 768 (level 3 inherits level 1's `0.8W` through the monotonic level ladder), the new-session block shrinks, and the same 14-step turn compacts only at level 5. Needs s1's headless takeover, because it counts compactions by the memory engine |
-| s4 | summarizer throws / returns garbage: the turn completes, the checkpoint is compaction-basic's own summary, the episode is `failed` with a 30 s backoff and is summarized after it |
-| s5 | `api.restore()`; with compaction-basic in charge the injected block is refilled on the step after a host compaction and compaction episodes are summarized in the background |
-| s6 | `dsh web --no-open --port 0`: plugin loads, client bundle listed in the web index, preset sessions run in assist mode, configEditor takeover mounts `dsh-memory-cloud-brain/engine` for new sessions (engine mode, memory checkpoints), restore removes the override |
-| s7 | SIGINT shutdown: prompt exit, no `*.lock` left in the store, no unhandled rejections, no lock timeouts or burned job attempts, open episodes sealed and queued |
+| s1 | Headless `api.takeover()` goes through the plugin manager and reports `restart-required`. With a 32K window, a 16-step turn triggers at least 2 pressure compactions by the memory engine. The session log contains `<memory-cloud>` checkpoints. Each compacted episode has `raw.jsonl`, `summary.md` and `gist.md`, and reuses the checkpoint summary without a second, background call. Later turns continue the same session. |
+| s2 | First the old session gets a few more turns. Then a new session gets one injected block per request, with distant gists and recent summaries. `memory_read #id` returns the summary, `level: raw` returns the original prompt, and `memory_search` finds the episode. An isolated session gets its own scope and no owner memory block or owner search hits. |
+| s3 | `api.setLevel(5)` writes through `ctx.settings`. On a 128K window the threshold drops from 104 857 to 32 768 tokens. Level 3 inherits level 1's `0.8W` threshold because each level is capped by the one below. The new-session block shrinks, and the same 14-step turn triggers engine compaction only at level 5. |
+| s4 | Make the summarizer throw or return garbage. The turn completes with compaction-basic's own summary in the checkpoint. The episode is marked `failed` and waits out a 30 s backoff before a working summarizer picks it up. |
+| s5 | `api.restore()` hands compaction back to compaction-basic. On the step after a host compaction, the plugin refills the memory block. It summarizes the compacted episodes in the background. |
+| s6 | `dsh web --no-open --port 0` starts the Web host. The plugin loads, the web index lists the client bundle and preset sessions start in assist mode. The config editor takes over the preset's compaction group, mounting `dsh-memory-cloud-brain/engine` for new sessions. They get engine mode and memory checkpoints. Restore removes the override. |
+| s7 | After SIGINT the Web host exits promptly. Open episodes are sealed and queued for summarization or already summarized. The harness checks for leftover `*.lock` files, unhandled rejections, lock timeouts and job attempts used up during shutdown. |
 
-Everything the harness creates lives in one `mcb-e2e-*` temp dir and is deleted at the end unless `--keep` is given; a web server it started is killed on exit.
+The harness stops any Web server it started on exit. By default it removes the `mcb-e2e-*` temporary directory and the test-plugin subdirectory. `--keep` retains both, including `logs/` and `dsh-home/` under the temporary directory. If you supplied `--dsh-dir`, the retained test plugins are in that installation.

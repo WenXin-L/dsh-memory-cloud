@@ -253,7 +253,8 @@ describe('createScopeResolver', () => {
     const resolver = createScopeResolver({ rules: () => [], unmatched: () => decideUnmatched('auto', bridges) })
     const alone = resolver.resolve(session())
     expect(alone).toMatchObject({ scope: OWNER_SCOPE, private: true })
-    expect(alone.reason).toContain('no chat bridge loaded')
+    expect(alone.reason).toContain('未检测到已知聊天桥接')
+    expect(alone.reason).toContain('can read owner memory')
     bridges = ['dsh-qqbot']
     const bridged = resolver.resolve(session())
     expect(bridged).toMatchObject({ private: false })

@@ -67,15 +67,25 @@ describe('/memory', () => {
     expect(text).toContain('上下文压力 42%')
     expect(text).toContain('summarized 12 · failed 1')
     expect(text).toContain('今日 3/200')
-    expect(text).toContain('接管 standard：未接管，可接管')
+    expect(text).toContain('接管压缩（预设 standard）：可接管压缩')
     expect(text).toContain('dsh-taskfold')
-    expect(text).toContain('- 未匹配规则的会话：使用私有 owner 作用域（unmatchedSessions=auto，未检测到聊天桥接插件）')
+    expect(text).toContain('- 未匹配规则的会话：使用私有 owner 作用域，可以读取主人记忆（unmatchedSessions=auto，未检测到已知聊天桥接插件）')
   })
 
   it('shows that unmatched sessions are isolated while a chat bridge is loaded', async () => {
     const result = await run(deps({ status: async () => status({ firewall: decideUnmatched('auto', ['qqbot']) }) }), 'status')
     const text = result.kind === 'success' ? result.text ?? '' : ''
-    expect(text).toContain('- 未匹配规则的会话：各自隔离，看不到主人的记忆（unmatchedSessions=auto，检测到聊天桥接插件 qqbot）；用作用域规则把自己的会话映射到 owner')
+    expect(text).toContain('- 未匹配规则的会话：各自隔离，无权读取主人记忆（unmatchedSessions=auto，检测到聊天桥接插件 qqbot）。只把你独用的会话标签映射到 owner。')
+  })
+
+  it('distinguishes a fallback to host thresholds from a fallback to host summaries', async () => {
+    const result = await run(deps({ status: async () => status({ fallbacks: [{ stage: 'threshold', kind: 'budget-error', sessionId: 's-1', detail: 'model lookup failed', at: 10 }] }) }), 'status')
+    expect(result).toMatchObject({ kind: 'success', text: expect.stringContaining('最近一次回退到宿主压缩阈值：budget-error（threshold，会话 s-1，model lookup failed）') })
+  })
+
+  it('preserves the cause when the takeover report is unavailable', async () => {
+    const result = await run(deps({ status: async () => status({ takeover: { kind: 'preset', editable: false, presets: [], error: 'profile /test unavailable' } }) }), 'status')
+    expect(result).toMatchObject({ kind: 'success', text: expect.stringContaining('读取压缩接管状态失败 — profile /test unavailable') })
   })
 
   it('validates and persists level and mode', async () => {
@@ -89,12 +99,13 @@ describe('/memory', () => {
     expect(dependencies.setLevel).toHaveBeenCalledTimes(1)
     expect(dependencies.setMode).toHaveBeenCalledTimes(1)
     const failing = deps({ setLevel: async () => ({ ok: false, message: 'no settings service' }) })
-    await expect(run(failing, 'level 2')).resolves.toEqual({ kind: 'error', text: '保存失败：no settings service' })
+    await expect(run(failing, 'level 2')).resolves.toEqual({ kind: 'error', text: '保存压缩档位失败 — no settings service' })
   })
 
   it('reports takeover outcomes, unknown subcommands, and handler failures as results', async () => {
     await expect(run(deps(), 'takeover')).resolves.toMatchObject({ kind: 'success', text: expect.stringContaining('已接管') })
     await expect(run(deps(), 'restore standard')).resolves.toMatchObject({ kind: 'error', text: expect.stringContaining('overridden') })
+    await expect(run(deps(), 'help')).resolves.toMatchObject({ kind: 'success', text: expect.stringMatching(/\/memory backfill[^\n]*尚未实现/) })
     await expect(run(deps(), 'backfill')).resolves.toEqual({ kind: 'error', text: 'not supported' })
     await expect(run(deps(), 'frobnicate')).resolves.toMatchObject({ kind: 'error', text: expect.stringContaining('/memory status') })
     const throwing = deps({ compactNow: async () => { throw new Error('busy') } })

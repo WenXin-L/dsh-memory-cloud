@@ -1,10 +1,7 @@
-# dsh-memory-cloud-brain bundle patch. The first row's id equals the package
-# name, so the browser half attaches to it and the Plugins settings form uses
-# the same namespace. The engine row is shipped disabled: headless/sdk
-# profiles enable it with `/memory takeover` (plugin manager, restart
-# required); web/desktop presets are taken over through the config editor
-# instead. Its id has no `:` because the Loader
-# cannot resolve top-level ids containing its nested-id separator.
+# The browser client and its Plugins form find the first row by package name.
+# The engine starts disabled. On headless/sdk, run `/memory takeover` and
+# restart DSH. On web/desktop, takeover edits a preset for new sessions.
+# Keep `:` out of the engine row id. The Loader uses it to separate nested ids.
 - insert:
     - id: dsh-memory-cloud-brain
       name: dsh-memory-cloud-brain

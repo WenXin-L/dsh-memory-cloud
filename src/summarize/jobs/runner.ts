@@ -129,7 +129,7 @@ export interface JobRunner {
 export class JobTimeoutError extends Error {
   readonly timeoutMs: number
   constructor(timeoutMs: number) {
-    super(`timed out after ${timeoutMs} ms`)
+    super(`后台总结任务已超时 / Background job timed out after ${timeoutMs} ms.`)
     this.name = 'JobTimeoutError'
     this.timeoutMs = timeoutMs
   }

@@ -196,7 +196,7 @@ export function renderTranscript(records: readonly RawEventRecord[], opts: Trans
         const name = (callId === undefined ? undefined : toolNames.get(callId)) ?? 'tool'
         const label = message.isError === true ? labels.toolError : labels.toolResult
         const body = inlineContent(blocksOf(message.content))
-        push(record.time, `${label} (${name})`, body.trim().length > 0 ? body : '(empty)', toolResultChars)
+        push(record.time, `${label} (${name})`, body.trim().length > 0 ? body : '（本条工具结果没有可显示的内容）', toolResultChars)
         break
       }
     }

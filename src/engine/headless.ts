@@ -74,15 +74,15 @@ export async function readHostEngineState(pluginManager: PluginManagerLike): Pro
  * first step back when the second fails, and reports `restart-required`.
  */
 export async function setHostEngineEnabled(pluginManager: PluginManagerLike | undefined, enabled: boolean): Promise<HostEngineOutcome> {
-  if (pluginManager === undefined) return outcome('failed', [], 'the plugin manager is not available in this profile')
+  if (pluginManager === undefined) return outcome('failed', [], '当前配置没有插件管理器。 / The plugin manager is unavailable in this profile.')
   let state: HostEngineState
   try {
     state = await readHostEngineState(pluginManager)
   } catch (error: unknown) {
-    return outcome('failed', [], `could not list plugins: ${errorMessage(error)}`)
+    return outcome('failed', [], `读取插件列表失败 / Failed to list plugins: ${errorMessage(error)}`)
   }
   if (state.engine === undefined) {
-    return outcome('failed', [], `engine row "${HOST_ENGINE_ROW.id}" is not in this profile; the bundle patch must insert it disabled`)
+    return outcome('failed', [], `当前配置缺少引擎条目。请在安装包补丁中加入该条目，并将初始状态设为停用。 / The bundle patch must add this missing engine row as disabled: ${HOST_ENGINE_ROW.id}`)
   }
 
   const plan: { readonly row: PluginRowLike; readonly enabled: boolean }[] = enabled
@@ -100,21 +100,26 @@ export async function setHostEngineEnabled(pluginManager: PluginManagerLike | un
       continue
     }
     for (const previous of done.toReversed()) steps.push({ ...await toggle(pluginManager, previous.row, !previous.enabled), rollback: true })
-    const verb = step.enabled ? 'enable' : 'disable'
+    const failure = step.enabled ? '启用插件失败 / Failed to enable plugin' : '停用插件失败 / Failed to disable plugin'
     if (result.result?.application === 'overridden') {
-      return outcome('overridden', steps, `could not ${verb} "${label(step.row)}": a home patch or command-line overlay overrides the row`)
+      return outcome('overridden', steps, `${failure} "${label(step.row)}". 用户目录补丁或命令行补丁覆盖了此设置。 / A home patch or command-line overlay overrides this setting.`)
     }
-    return outcome('failed', steps, `could not ${verb} "${label(step.row)}": ${result.error ?? result.result?.error?.diagnostic ?? result.result?.error?.code ?? result.result?.application ?? 'unknown failure'}`)
+    return outcome('failed', steps, `${failure} "${label(step.row)}": ${result.error ?? result.result?.error?.diagnostic ?? result.result?.error?.code ?? result.result?.application ?? '原因未知 / unknown cause'}`)
   }
 
-  if (steps.length === 0) return outcome('unchanged', steps, enabled ? 'the memory engine already owns host-level compaction' : 'host-level compaction already uses compaction-basic')
-  if (steps.some(step => step.result?.application === 'restart-required')) return outcome('restart-required', steps, 'saved; restart DSH for the change to take effect')
-  return outcome('applied', steps, enabled ? 'the memory engine now owns host-level compaction' : 'host-level compaction is back on compaction-basic')
+  const restored = state.basic === undefined
+    ? '宿主级记忆引擎已停用。 / The host-level memory engine is disabled.'
+    : '宿主压缩已选用 compaction-basic。 / Host compaction is set to compaction-basic.'
+  if (steps.length === 0) return outcome('unchanged', steps, enabled
+    ? '宿主压缩已经选了记忆引擎。这次来接班的，还是它自己。 / The memory engine is already selected for host compaction.'
+    : restored)
+  if (steps.some(step => step.result?.application === 'restart-required')) return outcome('restart-required', steps, '设置已保存，重启 DSH 后生效。 / Settings saved. Restart DSH to apply them.')
+  return outcome('applied', steps, enabled ? '记忆引擎已接管宿主压缩。 / The memory engine now handles host compaction.' : restored)
 }
 
 async function toggle(pluginManager: PluginManagerLike, row: PluginRowLike, enabled: boolean): Promise<HostEngineStep> {
   const base = { row: label(row), enabled }
-  if (row.readOnlyReason !== undefined) return { ...base, error: `read-only (${row.readOnlyReason})` }
+  if (row.readOnlyReason !== undefined) return { ...base, error: `条目只读 / read-only (${row.readOnlyReason})` }
   try {
     return { ...base, result: await pluginManager.setPluginEnabled(row.entryId, enabled) }
   } catch (error: unknown) {

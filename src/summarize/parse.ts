@@ -395,5 +395,5 @@ export function parseSummaryOutput(completion: Pick<LlmCompletion, 'text' | 'too
 export function answerText(completion: Pick<LlmCompletion, 'text' | 'toolCalls'>, toolName: string = MEMORY_SAVE_TOOL_NAME): string {
   const call = completion.toolCalls.find(item => item.name === toolName) ?? completion.toolCalls[0]
   const text = call === undefined ? stripThink(completion.text) : call.arguments.trim()
-  return text.length > 0 ? text : '(empty)'
+  return text.length > 0 ? text : '（上次输出没有可显示的内容）'
 }

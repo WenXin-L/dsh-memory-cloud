@@ -17,7 +17,7 @@ export class EpisodeNotOpenError extends Error {
   readonly status: string
 
   constructor(episode: string, status: string) {
-    super(`memory store: episode ${episode} is ${status}, not open; refusing to append`)
+    super(`memory store: 只有 open 状态的片段可以追加记录。 / Only open episodes accept new records. Episode ${episode}: ${status}.`)
     this.name = 'EpisodeNotOpenError'
     this.status = status
   }

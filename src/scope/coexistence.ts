@@ -177,22 +177,22 @@ export function detectCoexistence(loadedRowNames: readonly string[], table: read
   const en: string[] = []
   if (memoryPlugins.length > 0) {
     const ids = memoryPlugins.map(plugin => plugin.id)
-    zh.push(`检测到其他记忆插件：${ids.join('、')}。它们也会注入或存档记忆，可能与记忆云重复注入、重复占用上下文；建议同一 profile 只保留一个负责注入记忆的插件。`)
-    en.push(`Other memory plugins detected: ${ids.join(', ')}. They also inject or archive memory, which can duplicate the memory block and waste context; keep a single memory-injecting plugin per profile.`)
+    zh.push(`记忆插件 ${ids.join('、')} 也会注入或存档记忆。同一段记忆若进来两次，就占两份上下文。每份配置只启用一个负责注入记忆的插件即可避免重复。`)
+    en.push(`Other memory plugins detected: ${ids.join(', ')}. They also inject or archive memory. Keep one memory-injecting plugin per profile to avoid spending context on the same memory twice.`)
   }
   if (compactionPlugins.length > 0) {
     const ids = compactionPlugins.map(plugin => plugin.id)
-    zh.push(`检测到其他压缩插件：${ids.join('、')}。为避免压缩引擎冲突，记忆云将以辅助模式运行：保留现有压缩，压缩后再补充记忆块。`)
-    en.push(`Other compaction plugins detected: ${ids.join(', ')}. To avoid compaction-engine conflicts, Memory Cloud runs in assist mode: the existing compaction stays and the memory block is re-added after each compaction.`)
+    zh.push(`检测到压缩插件 ${ids.join('、')}。在 auto 设置下，记忆云会选择辅助模式，由现有引擎压缩，再由记忆云补回记忆块。`)
+    en.push(`Other compaction plugins detected: ${ids.join(', ')}. In auto mode, Memory Cloud selects assist mode. The existing engine handles compaction, then Memory Cloud adds the memory block back.`)
   }
   if (bridgePlugins.length > 0) {
     const ids = bridgePlugins.map(plugin => plugin.id)
-    zh.push(`检测到聊天桥接插件：${ids.join('、')}。桥接会话不带可供规则匹配的标签；unmatchedSessions 为 auto 时，未匹配任何作用域规则的会话各自使用隔离作用域，看不到主人的记忆。请用规则（如 cwd:/你的目录/* → owner）把自己的会话映射到 owner。`)
-    en.push(`Chat bridge plugins detected: ${ids.join(', ')}. Bridge sessions carry no tags that rules could match; with unmatchedSessions set to auto, sessions no scope rule matches each get an isolated scope and never see the owner's memory. Map your own sessions to owner with a rule (e.g. cwd:/your/dir/* -> owner).`)
+    zh.push(`已加载聊天桥接插件 ${ids.join('、')}。桥接标签需要由插件或集成方提供。当 unmatchedSessions=auto 时，未匹配规则的会话各自隔离，看不到主人的记忆。要让自己的会话访问主人记忆，请为它设置作用域规则，例如 cwd:/你的目录/* → owner。`)
+    en.push(`Chat bridge plugins loaded: ${ids.join(', ')}. Bridge tags must come from a plugin or integration. With unmatchedSessions=auto, each unmatched session is isolated from the owner's memory. To grant your own sessions access, map them to owner with a rule such as cwd:/your/dir/* -> owner.`)
   }
   for (const conflict of toolConflicts) {
-    zh.push(`${conflict.plugin} 也注册了同名工具 ${conflict.tools.join('、')}；DSH 不允许重名工具，后注册的一方会注册失败。`)
-    en.push(`${conflict.plugin} also registers ${conflict.tools.join(', ')}; DSH rejects duplicate tool names, so whichever plugin registers second fails to register it.`)
+    zh.push(`${conflict.plugin} 也使用工具名 ${conflict.tools.join('、')}。DSH 仅接受第一次注册，后注册的插件会遇到重名错误。`)
+    en.push(`${conflict.plugin} also uses the tool names ${conflict.tools.join(', ')}. DSH accepts the first registration. The next plugin to register the same name gets a duplicate-name error.`)
   }
   return {
     memoryPlugins,

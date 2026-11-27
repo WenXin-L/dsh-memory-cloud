@@ -32,7 +32,7 @@ export function createBackgroundRoute(deps: BackgroundRouteDeps): () => Promise<
       const info = await deps.resolveModelInfo(provider, model)
       result = info.id === undefined || info.id === model
         ? { ok: true, reason: '' }
-        : { ok: false, reason: `provider "${provider}" resolved "${model}" to "${info.id}"` }
+        : { ok: false, reason: `Provider "${provider}" returned model "${info.id}" when asked for "${model}".` }
     } catch (error) {
       result = { ok: false, reason: error instanceof Error ? error.message : String(error) }
     }
@@ -51,7 +51,7 @@ export function createBackgroundRoute(deps: BackgroundRouteDeps): () => Promise<
     if (fallback === undefined || (provider === fallback.provider && model === fallback.model)) return route
     const { ok, reason } = provider.length > 0 && model.length > 0
       ? await check(provider, model)
-      : { ok: false, reason: 'no model configured for this provider' }
+      : { ok: false, reason: `No model selected for provider "${provider}".` }
     if (ok) return route
     const replacement = withEffort(fallback)
     const key = `${provider}/${model}`

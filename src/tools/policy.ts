@@ -24,7 +24,7 @@ export function recallPolicy(pressure: number, recallLimitTokens: number): Recal
     return {
       kind: 'refuse',
       pressure: clamped,
-      message: `Memory recall is paused: the context is ${percent(clamped)}% full. Continue without it; recall works again after the context is compacted.`,
+      message: `上下文已用 ${percent(clamped)}%，回忆查询已暂停。先用现有信息继续，等上下文压缩后再查。`,
     }
   }
   const limit = Number.isFinite(recallLimitTokens) && recallLimitTokens > 0
