@@ -12,7 +12,7 @@ import { format } from 'node:util'
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const DSH_VERSION = process.env.DSH_VERSION ?? '0.2.2-rc.5'
 const SCENARIOS = ['s1', 's2', 's3', 's4', 's5', 's6', 's7']
-const PROMPT_VERSION = 'memory-cloud-summary/2'
+const PROMPT_VERSION = 'memory-cloud-summary/3'
 const PROMISE = '答应周五前把报告发给老板'
 
 const argv = process.argv.slice(2)
@@ -22,7 +22,13 @@ const option = (name) => {
   return index >= 0 ? argv[index + 1] : undefined
 }
 if (flag('--help') || flag('-h')) {
-  console.log('usage: node scripts/e2e/run-e2e.mjs [--keep] [--skip-build] [--dsh-dir <dir>] [--only s1,s2,...]')
+  console.log(`node scripts/e2e/run-e2e.mjs [--keep] [--skip-build] [--dsh-dir <dir>] [--only s1,s2,...]
+
+— 端到端检查 / End-to-end checks —
+  --keep         保留临时目录和测试插件 / Keep the test home, logs and test plugins
+  --skip-build   使用已有构建 / Use the existing plugin build
+  --dsh-dir      使用已有 DSH 安装目录 / Use an existing DSH installation directory
+  --only         按编号选择场景 / Run selected scenarios in order (s1–s7)`)
   process.exit(0)
 }
 const only = new Set((option('--only') ?? SCENARIOS.join(',')).split(',').map(item => item.trim()).filter(Boolean))
@@ -603,7 +609,7 @@ async function s2() {
   check('an isolated session gets its own scope and the isolated firewall decision', isolated.status === 0 && isoStatus?.firewall?.mode === 'isolated' && isoStatus?.agent?.scope?.private === false && isoStatus?.agent?.scope?.scope !== 'owner', JSON.stringify(isoStatus?.agent?.scope?.scope))
   const isoCalls = sinceJsonl(at, 'llm').filter(entry => entry.kind === 'conversation' && entry.sessionId === isolated.session)
   check('an isolated session receives no owner memory block', isoCalls.length > 0 && isoCalls.every(entry => entry.memoryBlocks === 0) && injectedChars(at, isolated.session) === undefined, isoCalls.map(entry => entry.memoryBlocks).join(','))
-  check('memory_search in an isolated session returns no owner hits', isolated.text.includes('No memories') && !isolated.text.includes(cat?.id ?? '?'), isolated.text.slice(0, 120))
+  check('memory_search in an isolated session returns no owner hits', isolated.text.includes('没有找到片段') && !isolated.text.includes(cat?.id ?? '?'), isolated.text.slice(0, 120))
   at = mark()
   turn(overlay('s2-owner', { actions: ['unmatched:owner'] }), undefined, '恢复 owner[[long:50]]')
   check('setConfig switches unmatchedSessions back to owner', probeResult(at, 'unmatched:owner')?.result?.live === 'owner' && /unmatchedSessions: owner/.test(profilePatch('headless')))
@@ -650,7 +656,8 @@ async function s4() {
   check('the compaction episode is marked failed and queued with backoff', failed.length > 0 && failed.every(meta => meta.status === 'failed' && meta.attempts === 1) && queued.length === failed.length && queued.every(job => job.notBefore >= failedAt + 20_000), failed.map(meta => `${meta.id}:${meta.status}`).join(', '))
   at = mark()
   const garbage = turn(overlay('s4-garbage', { window: 131072, summarize: 'garbage' }), undefined, '垃圾输出：请分步骤完成。[[steps:14:3000]]')
-  check('garbage output: one stricter retry, then fallback, turn completes', garbage.status === 0 && garbage.text.includes('完成了14步') && /could not be parsed after one retry/.test(since(at, 'dsh')) && sinceJsonl(at, 'llm').some(entry => entry.kind === 'replay' && entry.retry))
+  const parseFallback = `summarize fallback (compose-error) for ${garbage.session}: 已重试一次，仍未能解析出一行总结和摘要。 / Could not parse the gist and summary after one retry.`
+  check('garbage output: one stricter retry, then fallback, turn completes', garbage.status === 0 && garbage.text.includes('完成了14步') && since(at, 'dsh').includes(parseFallback) && sinceJsonl(at, 'llm').some(entry => entry.kind === 'replay' && entry.retry))
   const retried = [...failed, ...episodesOf(garbage.session).filter(meta => meta.sealReason === 'compaction')]
   await sleep(Math.max(0, failedAt + 31_000 - Date.now()))
   for (let attempt = 0; attempt < 6 && !retried.every(meta => index().episodes.find(item => item.id === meta.id)?.status === 'summarized'); attempt++) {
@@ -748,7 +755,7 @@ async function s7() {
   check('no unhandled rejections in any run', rejections.length === 0, rejections.map(entry => entry.reason.split('\n')[0]).join(' | '))
   const dshLog = existsSync(files.dsh) ? readFileSync(files.dsh, 'utf8') : ''
   check('no store lock timeouts', !/timed out waiting for the writer lock/.test(dshLog))
-  check('no job attempts burned by a shutdown', !/no provider\/model route/.test(dshLog))
+  check('no job attempts burned by a shutdown', !/Summarization requires a provider and a model\.|no provider\/model route/.test(dshLog))
   const web = jsonl(files.probe).filter(entry => entry.action === 'web:assist' || entry.action === 'web:engine').map(entry => entry.result?.session).filter(Boolean)
   const ended = web.flatMap(session => episodesOf(session).filter(meta => meta.sealReason === 'end'))
   const queue = state().queue

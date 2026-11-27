@@ -164,6 +164,8 @@ export interface TakeoverController {
 }
 
 const OVERRIDDEN_PATTERN = /overridden by a home patch or command-line overlay/i
+const NO_CONFIG_EDITOR = '编辑预设需要配置编辑器。请用 `dsh --profile` 启动。 / Start DSH with `dsh --profile` to edit presets.'
+const SHIPPED_GROUP_MISSING = '新版 DSH 预设已移除压缩组。 / The shipped preset no longer has a compaction group.'
 
 class TakeoverFailure extends Error {
   constructor(readonly code: TakeoverErrorCode, message: string) {
@@ -201,7 +203,7 @@ export function createTakeoverController(options: TakeoverControllerOptions): Ta
       await options.state.set(records)
       return undefined
     } catch (error: unknown) {
-      return `could not save the takeover record (${errorMessage(error)}); DSH upgrades will not be followed automatically`
+      return `接管记录保存失败，升级时的自动刷新可能受影响。 / Could not save the takeover records used for automatic refresh after DSH upgrades. ${errorMessage(error)}`
     }
   }
 
@@ -243,10 +245,10 @@ export function createTakeoverController(options: TakeoverControllerOptions): Ta
 
     async takeOver(presetId = DEFAULT_PRESET_ID) {
       const editor = editorOf()
-      if (editor === undefined) return failure('no-config-editor', 'preset takeover needs the config editor, which only runs under `dsh --profile`')
+      if (editor === undefined) return failure('no-config-editor', NO_CONFIG_EDITOR)
       try {
         const row = findPreset(editor, presetId)
-        if (!hasCompactionGroup(row.current)) throw new TakeoverFailure('no-compaction-group', `agent preset "${presetId}" has no compaction group to take over`)
+        if (!hasCompactionGroup(row.current)) throw new TakeoverFailure('no-compaction-group', `此预设没有可接管的压缩组。 / No compaction group in preset "${presetId}".`)
         const records = await readRecords()
         const known = records[row.entryId]
         const inherited = inheritedOf(editor, row.entry)
@@ -261,7 +263,7 @@ export function createTakeoverController(options: TakeoverControllerOptions): Ta
         await editor.edit(row.entry, (current, inheritedNow) => {
           captured.inherited = inheritedNow
           if (known !== undefined && configHash(current) === known.takeoverHash && hasCompactionGroup(inheritedNow)) return takeOverPreset(inheritedNow)
-          if (!hasCompactionGroup(current)) throw new TakeoverFailure('no-compaction-group', `agent preset "${presetId}" has no compaction group to take over`)
+          if (!hasCompactionGroup(current)) throw new TakeoverFailure('no-compaction-group', `此预设没有可接管的压缩组。 / No compaction group in preset "${presetId}".`)
           return takeOverPreset(current)
         })
         const next = captured.inherited === undefined ? records : { ...records, [row.entryId]: recordFor(row, captured.inherited) }
@@ -274,7 +276,7 @@ export function createTakeoverController(options: TakeoverControllerOptions): Ta
 
     async restore(presetId = DEFAULT_PRESET_ID) {
       const editor = editorOf()
-      if (editor === undefined) return failure('no-config-editor', 'restoring a preset needs the config editor, which only runs under `dsh --profile`')
+      if (editor === undefined) return failure('no-config-editor', NO_CONFIG_EDITOR)
       try {
         const row = findPreset(editor, presetId)
         const records = await readRecords()
@@ -293,8 +295,8 @@ export function createTakeoverController(options: TakeoverControllerOptions): Ta
           return releasePreset(current)
         })
         const saveWarning = record === undefined ? undefined : await writeRecords(remaining)
-        const keptWarning = edited.kept ? 'other edits to this preset were kept, so the profile still overrides it' : undefined
-        const warning = [keptWarning, saveWarning].filter(text => text !== undefined).join('; ')
+        const keptWarning = edited.kept ? '已撤销接管。预设中其余的自定义项仍会覆盖内置设置。 / Takeover removed. Any other preset edits still override the shipped settings.' : undefined
+        const warning = [keptWarning, saveWarning].filter(text => text !== undefined).join(' ')
         return succeed('restored', describe(editor, presetId, remaining), warning.length > 0 ? warning : undefined)
       } catch (error: unknown) {
         return editFailure(error)
@@ -334,18 +336,18 @@ export function createTakeoverController(options: TakeoverControllerOptions): Ta
             continue
           }
           if (record === undefined || configHash(row.current) !== record.takeoverHash) {
-            outcomes.push({ ...base, action: 'customized', detail: 'the preset was edited after the takeover; restore and take over again to follow DSH upgrades' })
+            outcomes.push({ ...base, action: 'customized', detail: '已跳过自动刷新，以保留自定义设置。要跟随 DSH 升级，请从内置预设的原始配置重新接管。 / Auto-refresh skipped this customized preset. To follow DSH upgrades, take over the unmodified shipped preset.' })
             continue
           }
           if (!hasCompactionGroup(inherited)) {
-            outcomes.push({ ...base, action: 'failed', code: 'no-compaction-group', detail: 'the shipped preset no longer has a compaction group' })
+            outcomes.push({ ...base, action: 'failed', code: 'no-compaction-group', detail: SHIPPED_GROUP_MISSING })
             continue
           }
           try {
             const captured: { inherited?: Record<string, unknown> } = {}
             await editor.edit(row.entry, (current, inheritedNow) => {
-              if (configHash(current) !== record.takeoverHash) throw new TakeoverFailure('edit-failed', 'the preset changed while the takeover was being refreshed')
-              if (!hasCompactionGroup(inheritedNow)) throw new TakeoverFailure('no-compaction-group', 'the shipped preset no longer has a compaction group')
+              if (configHash(current) !== record.takeoverHash) throw new TakeoverFailure('edit-failed', '刷新接管设置时预设已更改，本次刷新已停止。 / The preset changed during the refresh. The refresh stopped.')
+              if (!hasCompactionGroup(inheritedNow)) throw new TakeoverFailure('no-compaction-group', SHIPPED_GROUP_MISSING)
               captured.inherited = inheritedNow
               return takeOverPreset(inheritedNow)
             })
@@ -379,16 +381,16 @@ function statusOf(row: PresetRow, inherited: Record<string, unknown>, record: Ta
   if (!isTakenOver(row.current)) {
     return hasCompactionGroup(row.current)
       ? { ...base, state: 'available' }
-      : { ...base, state: 'unsupported', detail: 'no compaction group' }
+      : { ...base, state: 'unsupported', detail: '预设没有压缩组 / No compaction group in this preset.' }
   }
   if (hasCompactionGroup(inherited) && sameConfig(row.current, takeOverPreset(inherited))) return { ...base, state: 'active' }
   if (record !== undefined && configHash(row.current) === record.takeoverHash) {
     const detail = configHash(inherited) === record.inheritedHash
-      ? 'this plugin changed how it takes a preset over; the takeover will be re-applied'
-      : 'DSH shipped a new revision of this preset; the takeover will be re-applied'
+      ? '记忆云的接管方式已更新，这份预设还用着旧版接管设置。 / Memory Cloud updated how it takes over presets. This preset still uses the earlier settings.'
+      : 'DSH 已更新内置预设，当前接管设置仍基于上一版。 / DSH updated the shipped preset. The takeover still uses the earlier version.'
     return { ...base, state: 'outdated', detail }
   }
-  return { ...base, state: 'customized', detail: 'the preset was edited after the takeover and no longer follows DSH upgrades' }
+  return { ...base, state: 'customized', detail: '已保留自定义设置，此预设不再自动跟随 DSH 升级。 / This preset keeps its custom settings and no longer follows DSH upgrades automatically.' }
 }
 
 function presetRow(entry: ConfigEditorEntryLike): PresetRow | undefined {
@@ -402,7 +404,7 @@ function findPreset(editor: ConfigEditorLike, presetId: string): PresetRow {
     const row = presetRow(entry)
     if (row?.presetId === presetId) return row
   }
-  throw new TakeoverFailure('preset-not-found', `no agent preset "${presetId}" in this profile`)
+  throw new TakeoverFailure('preset-not-found', `当前配置没有这个代理预设。 / Preset "${presetId}" was not found in this profile.`)
 }
 
 function inheritedOf(editor: ConfigEditorLike, entry: ConfigEditorEntryLike): Record<string, unknown> | undefined {
@@ -422,7 +424,7 @@ function editFailure(error: unknown): TakeoverOutcome {
   if (error instanceof TakeoverFailure) return failure(error.code, error.message)
   const message = errorMessage(error)
   if (OVERRIDDEN_PATTERN.test(message)) {
-    return failure('overridden', `${message}; remove the preset override from $DSH_HOME/cordis.patch.yml or the --patch overlay first`, error)
+    return failure('overridden', `上层补丁覆盖了这个预设。请先移除相应的预设覆盖项。 / Remove the preset override from $DSH_HOME/cordis.patch.yml or the --patch overlay first. ${message}`, error)
   }
   return failure('edit-failed', message, error)
 }

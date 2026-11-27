@@ -41,7 +41,7 @@ export class ComposeTimeoutError extends Error {
   override readonly name = 'ComposeTimeoutError'
 
   constructor(readonly timeoutMs: number) {
-    super(`checkpoint composition timed out after ${timeoutMs} ms`)
+    super(`记忆检查点生成超时 / Checkpoint composition timed out (${timeoutMs} ms)`)
   }
 }
 
@@ -61,7 +61,7 @@ export class MemoryCompactionEngine extends BasicCompactionEngine {
     BasicCompactionEngine.Config,
     z.object({
       composeTimeoutMs: z.natural().min(1000).default(DEFAULT_COMPOSE_TIMEOUT_MS)
-        .description('Time allowed for composing a memory checkpoint before falling back to the default summary.'),
+        .description('生成记忆检查点的时限（毫秒）。超时后使用宿主默认摘要。 / Time limit in milliseconds for composing a memory checkpoint. On timeout, DSH uses its default summary.'),
     }),
   ])
 
@@ -118,7 +118,7 @@ export class MemoryCompactionEngine extends BasicCompactionEngine {
 
     const region = measureRegion(input.messages)
     const maxChars = maxCheckpointChars(region.tokens)
-    if (maxChars < MIN_CHECKPOINT_CHARS) return handBack('region-too-small', `${region.tokens} region tokens allow ${maxChars} chars`)
+    if (maxChars < MIN_CHECKPOINT_CHARS) return handBack('region-too-small', `这段对话留给检查点的位置太小了。 / Too little room for a checkpoint (${region.tokens} tokens, ${maxChars} chars available)`)
 
     let budget: ResolvedBudget
     try {
@@ -157,7 +157,7 @@ export class MemoryCompactionEngine extends BasicCompactionEngine {
     }
     if (typeof text !== 'string' || text.trim().length === 0) return handBack('empty')
     if (!fitsShrinkGuard(text, region.tokens)) {
-      return handBack('shrink-guard', `${text.length} chars exceed the ${maxChars}-char cap for ${region.tokens} region tokens`)
+      return handBack('shrink-guard', `检查点超出字符上限 / Checkpoint exceeds the character limit (${text.length}/${maxChars}, ${region.tokens} region tokens)`)
     }
     return { summary: [{ type: 'text', text }], ...summaryTarget(agent) }
   }

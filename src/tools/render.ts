@@ -65,21 +65,25 @@ export function formatHit(hit: SearchHitOutput): string {
   return `#${hit.id} ${hit.date} ${hit.gist}`
 }
 
+export function missingGist(status: string): string {
+  return `(${status}，暂无总结)`
+}
+
 export function formatTimelineEntry(entry: TimelineEntryOutput): string {
-  const marks = [entry.pinned ? 'pinned' : '', entry.sameSession ? '' : 'other session'].filter(mark => mark !== '')
+  const marks = [entry.pinned ? '已固定' : '', entry.sameSession ? '' : '其他会话'].filter(mark => mark !== '')
   return `${entry.current ? '→' : ' '} #${entry.id} ${entry.date} ${entry.gist}${marks.length > 0 ? ` (${marks.join(', ')})` : ''}`
 }
 
 export function renderSearch(query: string, value: SearchOutput): string {
-  const subject = query.trim() === '' ? 'in range' : `match "${query.trim()}"`
+  const subject = query.trim() === '' ? '所选日期范围内' : `查询“${query.trim()}”`
   const lines: string[] = []
   if (value.total === 0) {
-    lines.push(`No memories ${subject}.`)
+    lines.push(`${subject}没有找到片段。`)
   } else {
-    const showing = value.hits.length < value.total ? `, showing ${value.hits.length}` : ''
-    lines.push(`${value.total} ${value.total === 1 ? 'memory' : 'memories'} ${subject}${showing}:`)
+    const showing = value.hits.length < value.total ? `，本次列出 ${value.hits.length} 个` : ''
+    lines.push(`${subject}找到 ${value.total} 个片段${showing}。`)
     for (const hit of value.hits) lines.push(formatHit(hit))
-    lines.push('memory_read(id) returns the summary; level "raw" returns the original transcript.')
+    lines.push('用 memory_read(id) 读摘要，level="raw" 读原文。')
   }
   if (value.notice !== undefined) lines.push(value.notice)
   return lines.join('\n')
@@ -90,31 +94,31 @@ export function renderRead(value: ReadOutput): string {
   if (value.text !== '') lines.push(value.text)
   if (value.level === 'raw' && value.offset !== undefined && value.total !== undefined) {
     const last = value.offset + (value.count ?? 0)
-    const range = value.count === 0 ? `no records from ${value.offset}` : `records ${value.offset}–${last - 1}`
-    const next = value.nextOffset === undefined ? '; end' : `; next offset ${value.nextOffset}`
-    const hidden = value.hiddenRecords === undefined ? '' : `; ${value.hiddenRecords} system records hidden`
-    lines.push(`[${range} of ${value.total}${next}${hidden}]`)
+    const range = value.count === 0 ? `从 offset=${value.offset} 起无记录` : `记录 ${value.offset}–${last - 1}`
+    const next = value.nextOffset === undefined ? '已到末页' : `下一页 offset=${value.nextOffset}`
+    const hidden = value.hiddenRecords === undefined ? '' : `，另有 ${value.hiddenRecords} 条系统记录未计入`
+    lines.push(`[${range}，共 ${value.total} 条，${next}${hidden}]`)
   }
   if (value.notice !== undefined) lines.push(value.notice)
   return lines.join('\n')
 }
 
 export function renderTimeline(value: TimelineOutput): string {
-  const lines = [`Timeline around #${value.id}:`, ...value.entries.map(formatTimelineEntry)]
+  const lines = [`片段已按时间排好。→ 指向 #${value.id}`, ...value.entries.map(formatTimelineEntry)]
   if (value.notice !== undefined) lines.push(value.notice)
   return lines.join('\n')
 }
 
 export function renderFlag(action: FlagAction, value: FlagOutput): string {
-  const unchanged = value.changed ? '' : ' (no change)'
+  const unchanged = value.changed ? '' : '（原已如此）'
   switch (action) {
     case 'pin':
-      return `#${value.id} is pinned${unchanged}.`
+      return `#${value.id} 已固定${unchanged}。`
     case 'unpin':
-      return `#${value.id} is no longer pinned${unchanged}.`
+      return `#${value.id} 已取消固定${unchanged}。`
     case 'hide':
-      return `#${value.id} is hidden from memory blocks and search${unchanged}; nothing was deleted and memory_unhide restores it.`
+      return `#${value.id} 已从记忆块和搜索结果中隐藏${unchanged}。未删除任何数据，用 memory_unhide 可恢复可见。`
     case 'unhide':
-      return `#${value.id} is visible again${unchanged}.`
+      return `#${value.id} 现在可见${unchanged}。`
   }
 }

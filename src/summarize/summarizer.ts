@@ -114,7 +114,7 @@ export function createSummarizer(options: SummarizerOptions): EpisodeSummarizer 
         const gist = truncateToTokens(oneLine(result.gist), targets.gistTokens, estimator)
         const summary = truncateToTokens(result.summary, targets.summaryTokens, estimator)
         if (gist.length === 0 || summary.length === 0) {
-          throw new SummarizeError('parse', `summary targets too small to hold any text (gist ${targets.gistTokens}, summary ${targets.summaryTokens})`)
+          throw new SummarizeError('parse', `一行总结或摘要的 token 上限太低，未能保留正文。 / The token limit is too small to retain the gist or summary (gist ${targets.gistTokens}, summary ${targets.summaryTokens}).`)
         }
         return { ...result, gist, summary }
       }
@@ -143,7 +143,7 @@ export function createSummarizer(options: SummarizerOptions): EpisodeSummarizer 
           if (firstAssessment.parsed === undefined || (error instanceof SummarizeError && error.code === 'aborted')) throw error
         }
         const candidate = retried ?? firstAssessment.parsed
-        if (candidate === undefined) throw new SummarizeError('parse', 'summarizer output could not be parsed after one retry')
+        if (candidate === undefined) throw new SummarizeError('parse', '已重试一次，仍未能解析出一行总结和摘要。 / Could not parse the gist and summary after one retry.')
         return fit(candidate)
       }
 
@@ -212,7 +212,7 @@ export function createSummarizer(options: SummarizerOptions): EpisodeSummarizer 
 
       const transcript = request.transcript.trim()
       if (transcript.length === 0) {
-        throw new SummarizeError('empty-input', `episode ${request.episode.id} has no conversation content to summarize`)
+        throw new SummarizeError('empty-input', `片段中没有可供总结的对话。 / Episode ${request.episode.id} has no conversation to summarize.`)
       }
       const chunks = estimator.estimate(transcript) <= maxInputTokens
         ? [transcript]

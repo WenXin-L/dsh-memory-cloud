@@ -27,7 +27,7 @@ const tEn = translator(en)
 const tZh = translator(zh)
 
 interface MetaNode {
-  readonly meta: { readonly min?: number; readonly max?: number; readonly step?: number; readonly description?: string }
+  readonly meta: { readonly min?: number; readonly max?: number; readonly step?: number; readonly description?: Readonly<Record<string, string>> }
   readonly dict?: Readonly<Record<string, MetaNode>>
 }
 const schema = Config as unknown as MetaNode
@@ -139,12 +139,12 @@ describe('draft', () => {
     const withOverride = { ...draft, overrides: { ...draft.overrides, gistTokens: '2.5', recallLimitTokens: '-1' } }
     const reading = readDraft(withOverride, base, tEn)
     expect(reading.errors).toEqual({
-      idleMinutes: 'Must be at least 1.',
-      idleCompactRatio: 'Must be at most 1.',
+      idleMinutes: 'Enter 1 or more.',
+      idleCompactRatio: 'Enter 1 or less.',
       halfLifeDays: 'Enter a number.',
       maxEpisodeTokens: 'Required.',
       'overrides.gistTokens': 'Enter a whole number.',
-      'overrides.recallLimitTokens': 'Must be at least 0.',
+      'overrides.recallLimitTokens': 'Enter 0 or more.',
     })
     expect(reading.changed).toBe(true)
     expect(readDraft(withNumbers(draftOf(base), { maxEpisodeTokens: '1.5' }), base, tZh).errors).toEqual({ maxEpisodeTokens: '请输入整数。' })
@@ -156,7 +156,7 @@ describe('draft', () => {
     draft = editRule(editRule(draft, 1, 'match', 'qqbot:*:group:\\*'), 1, 'scope', 'qq-$2')
     expect(readDraft(draft, volatileConfig(), tEn).errors).toEqual({
       'scopeRules.0.match': 'Required.',
-      'scopeRules.1.scope': 'Uses $2, but the pattern has only 1 wildcard(s).',
+      'scopeRules.1.scope': 'The scope refers to $2. The wildcard count for this pattern is 1.',
     })
     const fixed = editRule(editRule(draft, 0, 'match', 'cwd:/srv/*'), 1, 'scope', 'qq-$1-$&-$$')
     expect(readDraft(fixed, volatileConfig(), tEn)).toMatchObject({
@@ -217,15 +217,18 @@ describe('labels', () => {
   })
 
   it('says that 0 turns size-based sealing off', () => {
-    expect(tEn('advMaxEpisodeTokensHint')).toMatch(/0 turns size-based sealing off/)
+    expect(tEn('advMaxEpisodeTokensHint')).toMatch(/Enter 0 to turn off size-based sealing/)
     expect(tZh('advMaxEpisodeTokensHint')).toMatch(/填 0 则不按大小封存/)
-    expect(schema.dict?.maxEpisodeTokens?.meta.description).toMatch(/0 disables size-based sealing/)
+    const description = schema.dict?.maxEpisodeTokens?.meta.description
+    expect(description?.en).toContain('Enter 0 to turn off size-based sealing')
+    expect(description?.zh).toContain('填 0 则不按大小封存')
+    expect(description?.['']).toBe(description?.en)
   })
 
   it('words save outcomes', () => {
-    expect(configNoticeView({ result: { ok: true, via: 'settings' } }, tEn)).toEqual({ tone: 'success', lines: ['Settings saved; they apply live.'] })
-    expect(configNoticeView({ result: { ok: false, message: 'overridden by --patch' } }, tZh)).toEqual({ tone: 'error', lines: ['未保存：overridden by --patch'] })
+    expect(configNoticeView({ result: { ok: true, via: 'settings' } }, tEn)).toEqual({ tone: 'success', lines: ['Your changes are saved to this profile. They are now working as settings.'] })
+    expect(configNoticeView({ result: { ok: false, message: 'overridden by --patch' } }, tZh)).toEqual({ tone: 'error', lines: ['保存高级设置失败 — overridden by --patch'] })
     expect(configNoticeView({ failure: { code: 'remote-access/denied', message: 'access denied' } }, tEn))
-      .toEqual({ tone: 'error', lines: ['Request failed (remote-access/denied): access denied'] })
+      .toEqual({ tone: 'error', lines: ['Saving advanced settings failed (remote-access/denied) — access denied'] })
   })
 })

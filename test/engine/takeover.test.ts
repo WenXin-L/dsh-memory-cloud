@@ -304,9 +304,10 @@ describe('createTakeoverController', () => {
 
     const restored = await controller.restore()
     expect(restored).toMatchObject({ ok: true, action: 'restored' })
-    expect(restored.ok && restored.warning).toContain('other edits to this preset were kept')
+    expect(restored.ok && restored.warning).toMatch(/其余的自定义项仍会覆盖.*other preset edits still override/i)
     expect(isTakenOver(standard.override)).toBe(false)
     expect(JSON.stringify(standard.override)).toContain('tool-mine')
+    expect(await controller.takeOver()).toMatchObject({ preset: { state: 'customized' } })
   })
 
   it('forgets a takeover that was removed outside the controller', async () => {
@@ -335,7 +336,7 @@ describe('createTakeoverController', () => {
     const bare: FakeRow = { id: 'preset-bare', name: '@deepseek-ai/dsh-agent-preset', shipped: { id: 'bare', plugins: [{ id: 'persona', name: '@deepseek-ai/dsh-persona' }] } }
     const fake = fakeEditor([bare])
     const controller = createTakeoverController({ configEditor: fake.editor, state })
-    expect((await controller.status()).presets).toEqual([{ entryId: 'preset-bare', presetId: 'bare', state: 'unsupported', recorded: false, detail: 'no compaction group' }])
+    expect((await controller.status()).presets).toEqual([{ entryId: 'preset-bare', presetId: 'bare', state: 'unsupported', recorded: false, detail: expect.stringMatching(/预设没有压缩组.*no compaction group/i) }])
     expect(await controller.takeOver('bare')).toMatchObject({ ok: false, code: 'no-compaction-group' })
   })
 

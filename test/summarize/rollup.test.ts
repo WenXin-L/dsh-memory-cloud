@@ -48,6 +48,8 @@ describe('createRollupSummarizer', () => {
     expect(outcome.usage).toEqual({ inputTokens: 80, outputTokens: 20 })
     const call = calls[0] as LlmCompletionRequest
     expect(call.system).toBe(ROLLUP_SYSTEM_PROMPT)
+    expect(call.system).toMatch(/答应提醒的事记在约定里.*条目确认提醒已创建才写成已设置/)
+    expect(call.system).toMatch(/行首日期可能只是片段或时期的起点.*缺少依据时保留原说法/)
     expect(call.tools).toBeUndefined()
     expect(call.purpose).toBe(SUMMARIZE_PURPOSE)
     expect(call.sessionId).toBeUndefined()
@@ -73,7 +75,9 @@ describe('createRollupSummarizer', () => {
 
   it('asks again after a cut-off answer and never keeps a cut-off sentence', async () => {
     const cut = setup([{ text: '本周小林', finish: 'max-tokens' }, { text: '本周小林说下周三搬', finish: 'max-tokens' }])
-    await expect(cut.rollups.rollup(request())).rejects.toMatchObject({ code: 'parse' })
+    await expect(cut.rollups.rollup(request())).rejects.toMatchObject({
+      code: 'parse', message: '时期总结在输出上限内未能保留完整句子。 / No complete sentence fit within the output limit for 2026-W47.',
+    })
     const instruction = cut.calls[1]?.messages[2]?.text ?? ''
     expect(instruction).toContain('截断')
     expect(instruction).not.toContain('超过上限')
@@ -98,14 +102,19 @@ describe('createRollupSummarizer', () => {
   it('retries an empty answer and fails after a second empty one', async () => {
     const ok = setup([{ text: '<think>只想了想</think>' }, { text: '这周很充实。' }])
     expect((await ok.rollups.rollup(request())).text).toBe('这周很充实。')
-    expect(ok.calls[1]?.messages[2]?.text).toContain('没有得到有效的时期总结')
+    expect(ok.calls[1]?.messages[1]?.text).toBe('（上次时期总结没有可显示的正文）')
+    expect(ok.calls[1]?.messages[2]?.text).toContain('上一份时期总结没有可用正文')
 
     const bad = setup([{ text: '' }, { text: '<think>x</think>' }])
-    await expect(bad.rollups.rollup(request())).rejects.toMatchObject({ code: 'parse' })
+    await expect(bad.rollups.rollup(request())).rejects.toMatchObject({
+      code: 'parse', message: '时期总结重试后仍没有可用正文。 / The rollup for 2026-W47 produced no usable text after one retry.',
+    })
   })
 
   it('rejects an empty entry list and propagates model errors', async () => {
-    await expect(setup([]).rollups.rollup(request({ items: [{ text: '  ' }] }))).rejects.toMatchObject({ code: 'empty-input' })
+    await expect(setup([]).rollups.rollup(request({ items: [{ text: '  ' }] }))).rejects.toMatchObject({
+      code: 'empty-input', message: '这个时期没有可汇总的条目。 / No entries to roll up for 2026-W47.',
+    })
     const error = await setup([{ finish: 'error', error: 'boom' }]).rollups.rollup(request()).catch((caught: unknown) => caught)
     expect(error).toBeInstanceOf(SummarizeError)
     expect((error as SummarizeError).code).toBe('llm-error')

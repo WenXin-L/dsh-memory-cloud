@@ -32,7 +32,7 @@ export interface ModeResolver {
   invalidate(): void
 }
 
-const TAKEOVER_HINT = '可用 /memory takeover 让本插件接管压缩'
+const TAKEOVER_HINT = '要让记忆云接管压缩，请运行 /memory takeover。'
 
 /**
  * Effective mode per agent (design §3.1): `off` and `assist` are literal;
@@ -44,18 +44,18 @@ export function decideMode(configured: CompactionMode, engineActive: boolean, co
   const base = { configured, engineActive }
   switch (configured) {
     case 'off':
-      return { ...base, mode: 'off', reason: '设置为 off：不注入记忆、不接管压缩' }
+      return { ...base, mode: 'off', reason: '已选 off。记忆块留在会话外，记忆云也不接管压缩。' }
     case 'assist':
-      return { ...base, mode: 'assist', reason: '设置为 assist：保留宿主压缩，压缩后补充记忆块' }
+      return { ...base, mode: 'assist', reason: '已选 assist。宿主负责压缩，记忆云在压缩后把记忆块放回来。' }
     case 'engine':
       return engineActive
-        ? { ...base, mode: 'engine', reason: '设置为 engine：本插件的压缩引擎负责此 agent 的压缩' }
-        : { ...base, mode: 'assist', reason: `设置为 engine，但此 agent 的压缩引擎不是本插件的引擎，退回辅助模式；${TAKEOVER_HINT}` }
+        ? { ...base, mode: 'engine', reason: '已选 engine。这个会话的压缩由记忆云接手。' }
+        : { ...base, mode: 'assist', reason: `已选 engine。这个会话仍在使用宿主引擎，记忆云已退回辅助模式。${TAKEOVER_HINT}` }
     case 'auto': {
       const others = coexistence.compactionPlugins.map(plugin => plugin.id)
-      if (!engineActive) return { ...base, mode: 'assist', reason: `auto：此 agent 的压缩由宿主引擎负责，使用辅助模式；${TAKEOVER_HINT}` }
-      if (others.length > 0) return { ...base, mode: 'assist', reason: `auto：检测到其他压缩插件 ${others.join('、')}，使用辅助模式` }
-      return { ...base, mode: 'engine', reason: 'auto：本插件的压缩引擎负责此 agent 的压缩，且未检测到其他压缩插件' }
+      if (!engineActive) return { ...base, mode: 'assist', reason: `auto 已选辅助模式。宿主引擎负责这个会话的压缩。${TAKEOVER_HINT}` }
+      if (others.length > 0) return { ...base, mode: 'assist', reason: `auto 已选辅助模式。还发现了这些压缩插件：${others.join('、')}。` }
+      return { ...base, mode: 'engine', reason: 'auto 已选引擎模式。记忆云已接手这个会话的压缩，也未检测到其他已知压缩插件。' }
     }
   }
 }

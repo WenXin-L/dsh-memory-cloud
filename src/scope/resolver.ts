@@ -178,7 +178,7 @@ export function createScopeResolver(options: ScopeResolverOptions): ScopeResolve
       return options.unmatched()
     } catch (error) {
       const decision = decideUnmatched('isolated')
-      return { ...decision, reason: `could not decide how to scope unmatched sessions (${error instanceof Error ? error.message : String(error)}); unmatched sessions are isolated` }
+      return { ...decision, reason: `作用域设置读取失败，未匹配的会话各自隔离。 / Scope lookup failed. Unmatched sessions are isolated: ${error instanceof Error ? error.message : String(error)}` }
     }
   }
 
@@ -188,7 +188,7 @@ export function createScopeResolver(options: ScopeResolverOptions): ScopeResolve
       const root = capture ? session : delegationRoot(session, options.lookup)
       const suffix = capture
         ? ''
-        : root === session ? '; subagent session, capture disabled' : `; subagent of session ${root.sessionId}, capture disabled`
+        : root === session ? ' · 子代理会话停用捕获 / subagent capture disabled' : ` · 子代理停用捕获，沿用根会话的作用域 / capture disabled for subagent of session ${root.sessionId}`
       const tags = descriptorTags(root)
       const rules = readRules()
       for (const [index, rule] of rules.entries()) {
@@ -196,7 +196,7 @@ export function createScopeResolver(options: ScopeResolverOptions): ScopeResolve
         const glob = compiled(rule.match)
         const needed = templateCaptures(rule.scope)
         if (needed > glob.wildcards) {
-          warnOnce(`${rule.match}\0${rule.scope}`, `scope rule ${index + 1} ${JSON.stringify(rule.match)} -> ${JSON.stringify(rule.scope)} is skipped: the scope uses $${needed} but the pattern has ${glob.wildcards} wildcard(s)`)
+          warnOnce(`${rule.match}\0${rule.scope}`, `规则引用的捕获组超出通配符数量，已跳过规则 / Skipped scope rule ${index + 1} (${JSON.stringify(rule.match)} → ${JSON.stringify(rule.scope)}): $${needed} requested, ${glob.wildcards} wildcard(s) available.`)
           continue
         }
         for (const tag of tags) {
@@ -206,25 +206,26 @@ export function createScopeResolver(options: ScopeResolverOptions): ScopeResolve
           const literalOwner = rule.scope === OWNER_SCOPE
           let scope = sanitizeScopeId(raw)
           if (scope === OWNER_SCOPE && !literalOwner) scope = `${OWNER_SCOPE}-${fnv1a(tag)}` as ScopeId
-          const sanitized = raw === scope ? '' : ` (sanitized from ${JSON.stringify(raw)})`
+          const sanitized = raw === scope ? '' : `（原值 / sanitized from ${JSON.stringify(raw)}）`
           return {
             scope,
             capture,
             private: literalOwner,
-            reason: `scope rule ${index + 1} ${JSON.stringify(rule.match)} matched tag ${JSON.stringify(tag)} -> scope ${scope}${sanitized}${suffix}`,
+            reason: `命中规则 / scope rule ${index + 1} (${JSON.stringify(rule.match)}) · 标签 / tag ${JSON.stringify(tag)} → 作用域 / scope ${scope}${sanitized}${suffix}`,
           }
         }
       }
       const unmatched = readUnmatched()
+      const reason = `未匹配作用域规则 / no scope rule matched · ${unmatched.reason}`
       if (unmatched.mode === 'owner') {
-        return { scope: OWNER_SCOPE, capture, private: true, reason: `no scope rule matched; ${unmatched.reason}${suffix}` }
+        return { scope: OWNER_SCOPE, capture, private: true, reason: `${reason}${suffix}` }
       }
       const scope = isolatedScopeId(root)
       return {
         scope,
         capture,
         private: false,
-        reason: `no scope rule matched; ${unmatched.reason}; isolated scope ${scope} without owner memory${suffix}`,
+        reason: `${reason} · 隔离作用域，无权读取主人记忆 / isolated scope without owner memory: ${scope}${suffix}`,
       }
     },
   }

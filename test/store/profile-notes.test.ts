@@ -50,8 +50,8 @@ describe('owner profile notes', () => {
       expect((await notes.apply(request)).changed).toBe(false)
     }
     for (const oldText of ['Tea', 'Tea black ', 'tea black', 'missing']) {
-      await expect(notes.apply({ action: 'replace', oldText, text: 'Coffee' })).rejects.toThrow(/no exact oldText match/)
-      await expect(notes.apply({ action: 'remove', oldText })).rejects.toThrow(/no exact oldText match/)
+      await expect(notes.apply({ action: 'replace', oldText, text: 'Coffee' })).rejects.toThrow(/与 oldText 完全一致.*No exact oldText match/)
+      await expect(notes.apply({ action: 'remove', oldText })).rejects.toThrow(/与 oldText 完全一致.*No exact oldText match/)
     }
     await expect(notes.apply({ action: 'replace', oldText: 'Tea black', text: ' Tea green' })).rejects.toThrow(/duplicate/)
     expect(await readFile(join(root, relativeFile), 'utf8')).toBe(raw)

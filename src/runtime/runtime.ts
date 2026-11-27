@@ -448,14 +448,14 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
   }
 
   const setLevel = async (level: number): Promise<SettingWriteResult> => {
-    if (!(COMPRESSION_LEVELS as readonly number[]).includes(level)) return { ok: false, message: `level must be one of ${COMPRESSION_LEVELS.join(', ')}` }
+    if (!(COMPRESSION_LEVELS as readonly number[]).includes(level)) return { ok: false, message: `请选择有效的压缩档位。 / level must be one of ${COMPRESSION_LEVELS.join(', ')}` }
     const result = await writeConfig({ level })
     if (result.ok) settingsChanged()
     return result
   }
 
   const setMode = async (mode: string): Promise<SettingWriteResult> => {
-    if (!(COMPACTION_MODES as readonly string[]).includes(mode)) return { ok: false, message: `compactionMode must be one of ${COMPACTION_MODES.join(', ')}` }
+    if (!(COMPACTION_MODES as readonly string[]).includes(mode)) return { ok: false, message: `请选择有效的压缩模式。 / compactionMode must be one of ${COMPACTION_MODES.join(', ')}` }
     const result = await writeConfig({ compactionMode: mode })
     if (result.ok) settingsChanged()
     return result
@@ -519,7 +519,7 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
       return { kind: 'preset', editable: status.editable, presets: status.presets, ...status.error === undefined ? {} : { error: status.error } }
     }
     const manager = pluginManagerOf(ctx)
-    if (manager === undefined) return { kind: 'host', editable: false, presets: [], error: 'plugin manager unavailable' }
+    if (manager === undefined) return { kind: 'host', editable: false, presets: [], error: '当前 profile 未提供插件管理器。 / No plugin manager is available in this profile.' }
     try {
       return { kind: 'host', editable: true, presets: [], host: await readHostEngineState(manager) }
     } catch (error) {
@@ -732,7 +732,7 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
     registrations.tools = true
   } catch (error) {
     const message = errorMessage(error)
-    registrations.problems.push(`回忆工具注册失败：${message}（可能与其他记忆插件的同名工具冲突，见共存提示）`)
+    registrations.problems.push(`回忆工具注册失败。请检查共存提示中的同名工具。 / Recall tool registration failed. Check for duplicate tool names. ${message}`)
     logger.warn('memory tools were not registered: %s', message)
   }
 
@@ -742,16 +742,16 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
     setMode,
     compactNow: async (agent, signal): Promise<CommandOutcome> => {
       const engine = compactionServiceOf(ctx, agent)
-      if (!hasMethod(engine, 'compactNow')) return { ok: false, text: '此 agent 没有可用的压缩引擎' }
+      if (!hasMethod(engine, 'compactNow')) return { ok: false, text: '这个会话没有可手动运行的压缩引擎。用 /memory status 查看当前模式。' }
       const result = await (engine as unknown as CompactionServiceLike).compactNow(agent, signal)
-      if (result === null) return { ok: true, text: '没有可整理的内容（上下文太短或刚整理过）' }
-      return { ok: true, text: `已整理：替换了 ${result.shadowedSeqs.length} 个上下文节点（约 ${result.shadowedTokenCount} tokens），对应片段已封存并进入总结` }
+      if (result === null) return { ok: true, text: '这一次，上下文留在原位。压缩引擎没有替换任何节点。' }
+      return { ok: true, text: `检查点已就位。它接替了 ${result.shadowedSeqs.length} 个上下文节点（约 ${result.shadowedTokenCount} tokens）。` }
     },
     summarizeNow: async (agent): Promise<CommandOutcome> => {
       await capture.sealSession(agent.session.id, 'idle')
       const queued = await runner.rescan({ retryExhausted: true })
       runner.kick({ force: true })
-      return { ok: true, text: `已封存当前尾部并开始处理后台总结队列（新加入 ${queued} 项，队列共 ${runner.stats().queue.length} 项）` }
+      return { ok: true, text: `已检查当前会话尾部。后台总结队列新收到 ${queued} 项，当前共有 ${runner.stats().queue.length} 项。用 /memory status 查看处理进度。` }
     },
     rebuild: async (agent): Promise<CommandOutcome> => {
       const scope = scopeOf(agent.session).scope
@@ -765,14 +765,14 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
       runner.kick({ force: true })
       return {
         ok: true,
-        text: `已将作用域 ${scope} 的 ${queued} 个片段加入重新总结队列（摘要 ${budget.recentSummaryTokens}、总结 ${budget.gistTokens} tokens；受每日配额 ${jobOptions.dailyQuota} 次限制）。新结果写入前继续使用旧文本。`,
+        text: `重新总结队列已收到作用域 ${scope} 的 ${queued} 个片段。每段的目标是摘要 ${budget.recentSummaryTokens} tokens、总结 ${budget.gistTokens} tokens，每日配额 ${jobOptions.dailyQuota} 次。新文本写好前，旧文本继续值班。`,
       }
     },
     takeover: presetId => takeoverAction(false, presetId),
     restore: presetId => takeoverAction(true, presetId),
     backfill: async (): Promise<CommandOutcome> => ({
       ok: false,
-      text: `暂不支持 /memory backfill：导入旧会话需要通过 ctx.sessionQuery 读取历史日志${optionalService(ctx, 'sessionQuery') === undefined ? '（当前 profile 也没有 sessionQuery 服务）' : ''}，该功能尚未实现。安装后的新会话会自动存档。`,
+      text: `/memory backfill 尚未实现，旧会话没有导入。导入需要 ctx.sessionQuery 读取历史日志。${optionalService(ctx, 'sessionQuery') === undefined ? '当前 profile 也没有提供这项服务。' : ''}安装后，符合捕获规则的新会话会自动存档。`,
     }),
   }
   try {
@@ -780,7 +780,7 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
     registrations.command = true
   } catch (error) {
     const message = errorMessage(error)
-    registrations.problems.push(`/memory 命令注册失败：${message}（可能与其他插件的同名命令冲突）`)
+    registrations.problems.push(`/memory 注册失败。请检查其他插件是否已注册同名命令。 / Command registration failed. Check for another plugin that registers /memory. ${message}`)
     logger.warn('/memory was not registered: %s', message)
   }
 

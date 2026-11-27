@@ -108,7 +108,7 @@ export function createConfigWriter(deps: ConfigWriterDeps): (write: ConfigWrite)
         return { ok: false, message: errorMessage(error) }
       }
     }
-    return { ok: false, message: `no settings service or config editor for row "${deps.rowId}"; edit the profile cordis.patch.yml instead` }
+    return { ok: false, message: `此配置行没有可用的设置服务或编辑器。请编辑当前 profile 的 cordis.patch.yml。 / No live settings writer for row "${deps.rowId}". Edit cordis.patch.yml in the current profile.` }
   }
 }
 
@@ -159,13 +159,13 @@ function schemaProblem(value: unknown, node: SchemaNode, path: string, live: boo
     for (const [key, field] of Object.entries(value)) {
       const child = Object.hasOwn(node.dict, key) ? node.dict[key] : undefined
       const childPath = path === '' ? key : `${path}.${key}`
-      if (child === undefined) return `unknown setting "${childPath}"`
+      if (child === undefined) return `未识别此设置项，请核对字段名。 / unknown setting "${childPath}"`
       const problem = schemaProblem(field, child, childPath, volatile)
       if (problem !== undefined) return problem
     }
     return undefined
   }
-  if (!volatile) return `"${path}" cannot be changed live; edit the profile cordis.patch.yml and restart`
+  if (!volatile) return `此项设置在启动时读取。请编辑当前 profile 的 cordis.patch.yml，然后重启 DSH。 / "${path}" takes effect at startup. Edit cordis.patch.yml in the current profile and restart DSH.`
   if (node.type === 'array' && node.inner !== undefined && Array.isArray(value)) {
     for (const [index, item] of value.entries()) {
       const problem = schemaProblem(item, node.inner, `${path}[${index}]`, true)
@@ -191,11 +191,11 @@ export function configPatchProblem(current: VolatileConfig, patch: ConfigPatch):
     return errorMessage(error)
   }
   for (const [index, rule] of next.scopeRules.entries()) {
-    if (rule.match.trim().length === 0) return `scopeRules[${index}].match must not be empty`
-    if (rule.scope.trim().length === 0) return `scopeRules[${index}].scope must not be empty`
+    if (rule.match.trim().length === 0) return `请填写作用域规则的匹配式。 / scopeRules[${index}].match must not be empty`
+    if (rule.scope.trim().length === 0) return `请填写匹配后的作用域。 / scopeRules[${index}].scope must not be empty`
     const needed = templateCaptures(rule.scope)
     const wildcards = compileGlob(rule.match).wildcards
-    if (needed > wildcards) return `scopeRules[${index}].scope uses $${needed} but the pattern has ${wildcards} wildcard(s)`
+    if (needed > wildcards) return `作用域模板引用了匹配式中不存在的捕获组。 / scopeRules[${index}].scope uses $${needed}. Wildcards in the pattern: ${wildcards}.`
   }
   return undefined
 }

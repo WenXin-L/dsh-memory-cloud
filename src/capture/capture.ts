@@ -187,7 +187,7 @@ export function createCapture(deps: CaptureDeps): Capture {
     try {
       return Math.max(0, estimator.estimate(text))
     } catch (error) {
-      warn('token estimate failed', error)
+      warn('token 估算失败，改按每 4 个字符约 1 token 计数。 / Token estimate failed. Using one token per four characters.', error)
       return Math.ceil(text.length / 4)
     }
   }
@@ -290,7 +290,10 @@ export function createCapture(deps: CaptureDeps): Capture {
    */
   function rebase(state: SessionState, episode: Episode, current: EpisodeMeta | undefined): void {
     const covered = current?.seqRange.last ?? -Infinity
-    warn(`episode ${episode.id ?? '(unopened)'} is no longer open (${current?.status ?? 'missing'}); continuing after seq ${covered} in a new episode`)
+    const resume = current === undefined
+      ? '原片段不存在，下一片段将接收所有缓冲记录。 / Episode missing. Any buffered records go into a new episode.'
+      : `这个片段已结束，后续记录另开片段。 / This episode is no longer open. Records after seq ${covered} go into a new episode.`
+    warn(`${resume} (${episode.id ?? '(unopened)'}, ${current?.status ?? 'missing'})`)
     if (state.episode !== episode) return
     const start = episode.records.findIndex(record => record.seq > covered)
     state.episode = start < 0 ? undefined : createEpisode(episode.scope, episode.records.slice(start), episode.tokens.slice(start))
@@ -347,7 +350,7 @@ export function createCapture(deps: CaptureDeps): Capture {
       try {
         await sealUpTo(state, seal)
       } catch (error) {
-        warn(`failed to seal ${seal.reason} episode ${state.episode?.id ?? '(unopened)'} of session ${state.sessionId}`, error)
+        warn(`片段封存失败，封存请求仍在队列里。 / Episode seal failed and remains queued (${seal.reason}, episode ${state.episode?.id ?? '(unopened)'}, session ${state.sessionId})`, error)
         return false
       }
       state.seals.shift()
@@ -550,7 +553,7 @@ export function createCapture(deps: CaptureDeps): Capture {
       const resolved = deps.resolveScope(session)
       return resolved.capture ? { ok: true, decision: resolved } : { ok: true }
     } catch (error) {
-      warn(`scope resolution failed for session ${session.sessionId}`, error)
+      warn(`确定会话作用域失败 / Scope resolution failed for session ${session.sessionId}`, error)
       return { ok: false }
     }
   }

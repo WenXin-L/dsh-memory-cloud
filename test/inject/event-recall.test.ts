@@ -42,7 +42,9 @@ describe('event matching and admission', () => {
     expect(full.message.source).toMatchObject({ kind: EVENT_MEMORY_SOURCE_KIND, revisions: [1, 2, 3] })
     const long = entry('海棠档案', '二'.repeat(600), 8)
     const pointer = renderEventRecall(session, OWNER_SCOPE, [long], 120, estimator)!
-    expect(JSON.stringify(pointer.message.content)).toContain('memory_event find')
+    const content = pointer.message.content[0]
+    expect(content?.type === 'text' && content.text.split('\n')[1]).toMatch(/仅供参考.*最新 revision.*用 subject 作 query/)
+    expect(content?.type === 'text' && JSON.parse(content.text.split('\n')[2]!)).toEqual({ subject: long.subject, revision: 8, lookup: 'memory_event find' })
     expect(pointer.tokens).toBeLessThanOrEqual(120)
     expect(renderEventRecall(session, OWNER_SCOPE, [long], 1, estimator)).toBeUndefined()
   })

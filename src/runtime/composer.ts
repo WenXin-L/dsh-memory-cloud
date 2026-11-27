@@ -95,11 +95,11 @@ export function createCheckpointComposer(deps: CheckpointComposerDeps): MemoryCh
   return {
     async compose(request: CheckpointRequest, signal?: AbortSignal): Promise<string> {
       const { sessionId, scope } = request
-      if (deps.mayRead?.(sessionId, scope) === false) throw new Error(`session ${sessionId} may not read memory scope ${scope}`)
+      if (deps.mayRead?.(sessionId, scope) === false) throw new Error(`记忆块未生成，当前会话无权读取此作用域。 / Session ${sessionId} may not read memory scope ${scope}.`)
       await deps.flushSession(sessionId)
       signal?.throwIfAborted()
       const open = latestOpen(await store.readIndex(scope), sessionId)
-      if (open === undefined) throw new Error(`no open episode for session ${sessionId} in scope ${scope}`)
+      if (open === undefined) throw new Error(`当前作用域找不到此会话正在记录的片段。 / No open episode for session ${sessionId} in scope ${scope}.`)
 
       const outcome = await deps.summarizer.summarize({
         episode: { id: open.id, sessionId, startedAt: open.startedAt, endedAt: request.now },
@@ -150,7 +150,7 @@ export function createCheckpointComposer(deps: CheckpointComposerDeps): MemoryCh
         now: request.now,
         maxChars: request.maxChars,
       })
-      if (packed.text.trim().length === 0) throw new Error(`no memory block fits ${request.maxChars} characters`)
+      if (packed.text.trim().length === 0) throw new Error(`检查点没有可写入的记忆块（上限 ${request.maxChars} 字符）。 / No memory block was packed for this checkpoint.`)
       signal?.throwIfAborted()
       await store.writeSnapshot(scope, { sessionId, n: snapshotNumber(request.regionSeqs) }, packed.text)
       return packed.text

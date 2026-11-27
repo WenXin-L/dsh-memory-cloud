@@ -24,7 +24,7 @@ function fixture(): RawEventRecord[] {
       seq: 10,
       time: T0 + 2 * MINUTE,
       type: 'tool/result',
-      data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'call-1', content: [{ type: 'text', text: `HEAD${'x'.repeat(5000)}TAIL` }], source: { kind: 'tool', callId: 'call-1' } } },
+      data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'call-1', content: [{ type: 'text', text: `HEAD${'🌿'.repeat(2500)}TAIL` }], source: { kind: 'tool', callId: 'call-1' } } },
     },
     { seq: 11, time: T0 + 2 * MINUTE, type: 'compaction/summary', data: { compactionId: 'c2', summary: [{ type: 'text', text: 'COMPACTION-SUMMARY' }] } },
     { seq: 12, time: T0 + 2 * MINUTE, type: 'tool/call', data: { turn: 1, step: 2, callId: 'call-2', name: 'web_search', arguments: '{"q":"面试技巧"}' } },
@@ -75,9 +75,18 @@ describe('renderTranscript', () => {
     const line = text.split('\n').find(item => item.includes('Tool result (calendar_add)')) ?? ''
     expect(line).toContain('HEAD')
     expect(text).toContain('TAIL')
-    expect(text).toMatch(/chars omitted/)
+    expect(text).toContain('[… 中间省略了 4708 个 UTF-16 代码单元 …]')
     const entry = splitTranscriptEntries(text).find(item => item.includes('Tool result (calendar_add)')) ?? ''
     expect(entry.length).toBeLessThan(400)
+  })
+
+  it('labels an empty tool result while keeping the user’s own wording', () => {
+    const text = renderTranscript([
+      userRecord(1, T0, '(empty)'),
+      { seq: 2, time: T0, type: 'tool/result', data: { message: { role: 'tool', content: [] } } },
+    ], { timeZone: 'UTC' })
+    expect(text).toContain('User: (empty)')
+    expect(text).toContain('Tool result (tool): （本条工具结果没有可显示的内容）')
   })
 
   it('stamps a Chinese weekday only when the local date changes', () => {

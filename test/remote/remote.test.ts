@@ -49,10 +49,10 @@ function fakeConfig(): ConfigAccess & { readonly [K in keyof ConfigAccess]: Retu
 describe('wire contract', () => {
   it('parses arguments the same way on both halves', () => {
     expect(parseLevel(5)).toBe(5)
-    expect(() => parseLevel('5')).toThrow('level must be one of 1, 2, 3, 4, 5')
+    expect(() => parseLevel('5')).toThrow('请选择一个有效的压缩档位。 / level must be one of 1, 2, 3, 4, 5')
     expect(() => parseLevel(6)).toThrow()
     expect(parseMode('assist')).toBe('assist')
-    expect(() => parseMode('turbo')).toThrow('mode must be one of auto, engine, assist, off')
+    expect(() => parseMode('turbo')).toThrow('请选择一个有效的压缩模式。 / mode must be one of auto, engine, assist, off')
     expect(parseOptionalId(undefined)).toBeUndefined()
     expect(parseOptionalId('ptc')).toBe('ptc')
     expect(() => parseOptionalId('  ')).toThrow()
@@ -72,24 +72,24 @@ describe('wire contract', () => {
     expect(parseConfigPatch(patch)).toBe(patch)
     expect(parseConfigPatch({ overrides: {}, scopeRules: [] })).toEqual({ overrides: {}, scopeRules: [] })
     const rejected: [unknown, string][] = [
-      [null, 'settings patch must be an object'],
-      [[], 'settings patch must be an object'],
-      [{}, 'settings patch changes nothing'],
-      [{ storageRoot: '/tmp/x' }, 'unknown setting "storageRoot"'],
-      [JSON.parse('{"__proto__": {"level": 1}}'), 'unknown setting "__proto__"'],
-      [{ level: 7 }, 'level must be one of 1, 2, 3, 4, 5'],
-      [{ compactionMode: 'turbo' }, 'mode must be one of auto, engine, assist, off'],
-      [{ idleMinutes: '5' }, 'idleMinutes must be a finite number'],
-      [{ captureReasoning: 1 }, 'captureReasoning must be a boolean'],
-      [{ summarizer: { temperature: 'x' } }, 'unknown setting "summarizer.temperature"'],
-      [{ summarizer: { model: 3 } }, 'summarizer.model must be a string'],
-      [{ overrides: { gistTokens: null } }, 'overrides.gistTokens must be a finite number'],
-      [{ overrides: { thresholdRatio: 1 } }, 'unknown setting "overrides.thresholdRatio"'],
-      [{ scopeRules: {} }, 'scopeRules must be an array'],
-      [{ scopeRules: [{ match: 'a' }] }, 'scopeRules[0].scope is required'],
-      [{ scopeRules: [{ match: 'a', scope: 'b', private: true }] }, 'unknown setting "scopeRules[0].private"'],
-      [{ unmatchedSessions: 'public' }, 'unmatchedSessions must be one of auto, owner, isolated'],
-      [{ unmatchedSessions: true }, 'unmatchedSessions must be one of auto, owner, isolated'],
+      [null, '要保存设置，请传入一个对象。 / settings patch must be an object'],
+      [[], '要保存设置，请传入一个对象。 / settings patch must be an object'],
+      [{}, '请至少填写一项要保存的设置。 / settings patch changes nothing'],
+      [{ storageRoot: '/tmp/x' }, '未识别此设置项，请核对字段名。 / unknown setting "storageRoot"'],
+      [JSON.parse('{"__proto__": {"level": 1}}'), '未识别此设置项，请核对字段名。 / unknown setting "__proto__"'],
+      [{ level: 7 }, '请选择一个有效的压缩档位。 / level must be one of 1, 2, 3, 4, 5'],
+      [{ compactionMode: 'turbo' }, '请选择一个有效的压缩模式。 / mode must be one of auto, engine, assist, off'],
+      [{ idleMinutes: '5' }, '此字段需要填写有限数值。 / idleMinutes must be a finite number'],
+      [{ captureReasoning: 1 }, '是否记录推理内容需要填写 true 或 false。 / captureReasoning must be a boolean'],
+      [{ summarizer: { temperature: 'x' } }, '未识别此设置项，请核对字段名。 / unknown setting "summarizer.temperature"'],
+      [{ summarizer: { model: 3 } }, '此字段需要填写字符串。 / summarizer.model must be a string'],
+      [{ overrides: { gistTokens: null } }, '此字段需要填写有限数值。 / overrides.gistTokens must be a finite number'],
+      [{ overrides: { thresholdRatio: 1 } }, '未识别此设置项，请核对字段名。 / unknown setting "overrides.thresholdRatio"'],
+      [{ scopeRules: {} }, '作用域规则需要按顺序放在一个数组里。 / scopeRules must be an array'],
+      [{ scopeRules: [{ match: 'a' }] }, '请补全这条作用域规则的必填字段。 / scopeRules[0].scope is required'],
+      [{ scopeRules: [{ match: 'a', scope: 'b', private: true }] }, '未识别此设置项，请核对字段名。 / unknown setting "scopeRules[0].private"'],
+      [{ unmatchedSessions: 'public' }, '请选择未匹配会话的处理方式。 / unmatchedSessions must be one of auto, owner, isolated'],
+      [{ unmatchedSessions: true }, '请选择未匹配会话的处理方式。 / unmatchedSessions must be one of auto, owner, isolated'],
     ]
     for (const [value, message] of rejected) expect(() => parseConfigPatch(value), message).toThrow(message)
   })
@@ -126,7 +126,7 @@ describe('wire contract', () => {
     const [setConfig] = contribution.descriptors.filter(descriptor => descriptor.method === 'setConfig')
     expect(setConfig?.parameters[0]?.acceptsUndefined).toBeUndefined()
     expect(setConfig?.parameters[0]?.codec.jsonSchema).toMatchObject({ type: 'object', minProperties: 1, additionalProperties: false })
-    expect(() => setConfig?.parameters[0]?.codec.create().parse({ storageRoot: '/x' })).toThrow('unknown setting "storageRoot"')
+    expect(() => setConfig?.parameters[0]?.codec.create().parse({ storageRoot: '/x' })).toThrow('未识别此设置项，请核对字段名。 / unknown setting "storageRoot"')
   })
 })
 
@@ -165,12 +165,12 @@ describe('host binding', () => {
     const api = fakeApi()
     const remote = new MemoryCloudRemote(api, fakeConfig(), () => undefined)
     await expect(remote.setLevel(2)).resolves.toEqual({ ok: true, via: 'settings' })
-    await expect(remote.setLevel('2')).resolves.toEqual({ ok: false, message: 'level must be one of 1, 2, 3, 4, 5' })
+    await expect(remote.setLevel('2')).resolves.toEqual({ ok: false, message: '请选择一个有效的压缩档位。 / level must be one of 1, 2, 3, 4, 5' })
     await expect(remote.setMode('engine')).resolves.toEqual({ ok: true, via: 'settings' })
-    await expect(remote.setMode(null)).resolves.toEqual({ ok: false, message: 'mode must be one of auto, engine, assist, off' })
+    await expect(remote.setMode(null)).resolves.toEqual({ ok: false, message: '请选择一个有效的压缩模式。 / mode must be one of auto, engine, assist, off' })
     await expect(remote.takeover(undefined)).resolves.toEqual({ kind: 'preset', ok: true, action: 'applied' })
     await expect(remote.restore('ptc')).resolves.toEqual({ kind: 'preset', ok: true, action: 'restored' })
-    await expect(remote.restore(7)).resolves.toEqual({ kind: 'preset', ok: false, code: 'preset-not-found', message: 'identifier must be a non-empty string' })
+    await expect(remote.restore(7)).resolves.toEqual({ kind: 'preset', ok: false, code: 'preset-not-found', message: '会话或预设 ID 需要填写非空字符串。 / identifier must be a non-empty string' })
     expect(api.setLevel.mock.calls).toEqual([[2]])
     expect(api.setMode.mock.calls).toEqual([['engine']])
     expect(api.takeover.mock.calls).toEqual([[undefined]])
@@ -184,8 +184,8 @@ describe('host binding', () => {
     expect((await remote.getConfig()).config.halfLifeDays).toBeNull()
     await expect(remote.getConfig()).resolves.toEqual(configView())
     await expect(remote.setConfig({ idleMinutes: 5 })).resolves.toEqual({ ok: true, via: 'settings' })
-    await expect(remote.setConfig({ storageRoot: '/tmp' })).resolves.toEqual({ ok: false, message: 'unknown setting "storageRoot"' })
-    await expect(remote.setConfig(undefined)).resolves.toEqual({ ok: false, message: 'settings patch must be an object' })
+    await expect(remote.setConfig({ storageRoot: '/tmp' })).resolves.toEqual({ ok: false, message: '未识别此设置项，请核对字段名。 / unknown setting "storageRoot"' })
+    await expect(remote.setConfig(undefined)).resolves.toEqual({ ok: false, message: '要保存设置，请传入一个对象。 / settings patch must be an object' })
     expect(config.set.mock.calls).toEqual([[{ idleMinutes: 5 }]])
   })
 
@@ -260,7 +260,7 @@ describe('registered with the runtime', () => {
     expect((await remote.getConfig()).config).toMatchObject({ idleMinutes: 5, overrides: { memoryBudgetTokens: 2048 }, scopeRules: [{ match: 'session:remote-*', scope: 'remote-$1' }] })
 
     await expect(remote.setConfig({ idleMinutes: 0 })).resolves.toEqual({ ok: false, message: '$.idleMinutes expected number >= 1 but got 0' })
-    await expect(remote.setConfig({ scopeRules: [{ match: ' ', scope: 'x' }] })).resolves.toEqual({ ok: false, message: 'scopeRules[0].match must not be empty' })
+    await expect(remote.setConfig({ scopeRules: [{ match: ' ', scope: 'x' }] })).resolves.toEqual({ ok: false, message: '请填写作用域规则的匹配式。 / scopeRules[0].match must not be empty' })
     expect(h.config.idleMinutes.get()).toBe(5)
     expect(conversation.agent.session.id).toBe('remote-session')
   })

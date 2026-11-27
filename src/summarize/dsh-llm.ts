@@ -63,7 +63,7 @@ function mapFinish(reason: FinishReason): { finish: LlmFinish; error?: string } 
     case 'aborted':
       return { finish: reason.kind, error: `${reason.failure.code}: ${reason.failure.message}` }
     default:
-      return { finish: 'error', error: `unexpected finish "${String((reason as { kind: unknown }).kind)}"` }
+      return { finish: 'error', error: `模型返回了未知的结束原因 / Unexpected model finish reason "${String((reason as { kind: unknown }).kind)}"` }
   }
 }
 
@@ -89,6 +89,7 @@ function textBlocks(blocks: readonly ContentBlock[]): string {
  */
 export function createDshLlmClient(ctx: { readonly llm: DshLlmLike }, options: DshLlmClientOptions = {}): LlmClient {
   const timeoutMs = options.timeoutMs ?? 180_000
+  const timeoutMessage = `摘要请求超时 / Summary request timed out after ${timeoutMs} ms`
 
   const effortFor = async (provider: string, model: string, effort: string | undefined, signal: AbortSignal): Promise<ReasoningEffortId | undefined> => {
     if (effort === undefined || effort.length === 0) return undefined
@@ -112,8 +113,8 @@ export function createDshLlmClient(ctx: { readonly llm: DshLlmLike }, options: D
       const provider = request.provider.length > 0 ? request.provider : fallback?.provider ?? ''
       const model = request.model.length > 0 ? request.model : fallback?.model ?? ''
       const failed = (finish: 'error' | 'aborted', error: string): LlmCompletion => ({ text: '', toolCalls: [], finish, error, provider, model })
-      if (provider.length === 0 || model.length === 0) return failed('error', 'no provider/model route for the memory-cloud summarizer call')
-      if (signal?.aborted === true) return failed('aborted', 'aborted before the request started')
+      if (provider.length === 0 || model.length === 0) return failed('error', '生成摘要需要提供方和模型。请检查模型设置。 / Summarization requires a provider and a model. Check the model settings.')
+      if (signal?.aborted === true) return failed('aborted', '摘要请求在发出前已取消。 / The summary request was canceled before it started.')
 
       const controller = new AbortController()
       const onAbort = (): void => controller.abort(signal?.reason)
@@ -122,7 +123,7 @@ export function createDshLlmClient(ctx: { readonly llm: DshLlmLike }, options: D
       const timer = timeoutMs > 0 && Number.isFinite(timeoutMs)
         ? setTimeout(() => {
           timedOut = true
-          controller.abort(new Error(`memory-cloud summarizer call timed out after ${timeoutMs} ms`))
+          controller.abort(new Error(timeoutMessage))
         }, timeoutMs)
         : undefined
       try {
@@ -154,7 +155,7 @@ export function createDshLlmClient(ctx: { readonly llm: DshLlmLike }, options: D
         for await (const chunk of ctx.llm.stream(generate)) assembler.push(chunk)
         const mapped = mapFinish(assembler.finish)
         const blocks = assembler.blocks()
-        const timeoutError = timedOut ? { finish: 'error' as const, error: `timed out after ${timeoutMs} ms` } : undefined
+        const timeoutError = timedOut ? { finish: 'error' as const, error: timeoutMessage } : undefined
         const outcome = mapped.finish === 'aborted' && timeoutError !== undefined ? timeoutError : mapped
         return {
           text: textBlocks(blocks),
@@ -166,7 +167,7 @@ export function createDshLlmClient(ctx: { readonly llm: DshLlmLike }, options: D
           model,
         }
       } catch (error) {
-        if (timedOut) return failed('error', `timed out after ${timeoutMs} ms`)
+        if (timedOut) return failed('error', timeoutMessage)
         return failed(controller.signal.aborted ? 'aborted' : 'error', errorText(error))
       } finally {
         if (timer !== undefined) clearTimeout(timer)

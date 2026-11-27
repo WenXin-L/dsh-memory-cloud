@@ -91,7 +91,7 @@ export function createRollupSummarizer(options: RollupSummarizerOptions): Rollup
     async rollup(request, signal) {
       throwIfAborted(signal)
       const items = request.items.filter(item => item.text.trim().length > 0)
-      if (items.length === 0) throw new SummarizeError('empty-input', `rollup ${request.period.key} has no entries`)
+      if (items.length === 0) throw new SummarizeError('empty-input', `这个时期没有可汇总的条目。 / No entries to roll up for ${request.period.key}.`)
       const route = request.route ?? resolveRoute(options.route)
       const ledger = new CallLedger(llm, route, purpose, undefined, signal)
       const timeZone = resolveTimeZone(request.timeZone ?? options.timeZone)
@@ -114,7 +114,7 @@ export function createRollupSummarizer(options: RollupSummarizerOptions): Rollup
         try {
           answers.unshift(await call([
             ...messages,
-            { role: 'assistant', text: first.text.length > 0 ? first.text : '(empty)' },
+            { role: 'assistant', text: first.text.length > 0 ? first.text : '（上次时期总结没有可显示的正文）' },
             { role: 'user', text: rollupRetryInstruction(issue, target, estimator) },
           ]))
         } catch (error) {
@@ -127,8 +127,8 @@ export function createRollupSummarizer(options: RollupSummarizerOptions): Rollup
         const fitted = truncateToTokens(candidate, target, estimator)
         if (fitted.length === 0) {
           throw new SummarizeError('parse', usable.length === 0
-            ? `rollup ${request.period.key} produced no usable text`
-            : `rollup ${request.period.key} was cut off by the output limit before a complete sentence`)
+            ? `时期总结重试后仍没有可用正文。 / The rollup for ${request.period.key} produced no usable text after one retry.`
+            : `时期总结在输出上限内未能保留完整句子。 / No complete sentence fit within the output limit for ${request.period.key}.`)
         }
         return fitted
       }

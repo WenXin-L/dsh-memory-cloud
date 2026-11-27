@@ -127,10 +127,10 @@ export function createSummaryService(deps: SummaryServiceDeps): SummaryService {
 
   /** A route the summarizer can call, else a deferral: no model is known yet or the host is going away. */
   const readyRoute = async (): Promise<SummaryRoute> => {
-    if (!hostReady()) throw new JobDeferredError('the host model services are unavailable (DSH is shutting down or the plugin is unloading)')
+    if (!hostReady()) throw new JobDeferredError('Summary queued. Host model services are unavailable during shutdown or plugin unload.')
     const route = await deps.backgroundRoute()
     if (route.provider.length === 0 || route.model.length === 0) {
-      throw new JobDeferredError('no summarizer model route is available yet (no summarizer.provider/model and no default model)')
+      throw new JobDeferredError('Summary queued. Set summarizer.provider and summarizer.model, or select a default model in DSH.')
     }
     return route
   }
@@ -139,7 +139,7 @@ export function createSummaryService(deps: SummaryServiceDeps): SummaryService {
   const deferIfHostGone = (error: unknown): unknown =>
     hostReady() || error instanceof JobDeferredError
       ? error
-      : new JobDeferredError(`deferred while the host model services are unavailable: ${errorMessage(error)}`, { cause: error })
+      : new JobDeferredError(`Summary deferred until host model services return. ${errorMessage(error)}`, { cause: error })
 
   return {
     summarizer,

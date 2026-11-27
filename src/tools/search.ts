@@ -2,6 +2,7 @@ import type { EpisodeId, EpisodeMeta, MemoryIndex, MemoryStore, Millis, ScopeId,
 import { isEmptyEpisode } from '../runtime/sources.ts'
 import type { FileMemoryStore, TierDocument } from '../store/index.ts'
 import { isConversationRecord, rawRecordText } from './raw.ts'
+import { missingGist } from './render.ts'
 import { extractQueryDates, isCjk, isoDatesIn, localDate, normalize, queryTerms, tokenize, truncateToTokens } from './text.ts'
 import type { Tokens } from './text.ts'
 
@@ -327,7 +328,7 @@ export function createMemorySearch(deps: MemorySearchDeps): MemorySearch {
   }
 
   function hitGist(doc: Doc, snippet: string | undefined): string {
-    const text = doc.gist ?? doc.summary ?? snippet ?? `(${doc.meta.status}; not summarized yet)`
+    const text = doc.gist ?? doc.summary ?? snippet ?? missingGist(doc.meta.status)
     return truncateToTokens(text.replace(/\s+/g, ' ').trim(), options.hitGistTokens, estimator).text
   }
 

@@ -87,19 +87,19 @@ export type RemoteParameter = (typeof REMOTE_METHODS)[RemoteMethod][number]
 
 export function parseLevel(value: unknown): CompressionLevel {
   if (typeof value === 'number' && (COMPRESSION_LEVELS as readonly number[]).includes(value)) return value as CompressionLevel
-  throw new TypeError(`level must be one of ${COMPRESSION_LEVELS.join(', ')}`)
+  throw new TypeError(`请选择一个有效的压缩档位。 / level must be one of ${COMPRESSION_LEVELS.join(', ')}`)
 }
 
 export function parseMode(value: unknown): CompactionMode {
   if (typeof value === 'string' && (COMPACTION_MODES as readonly string[]).includes(value)) return value as CompactionMode
-  throw new TypeError(`mode must be one of ${COMPACTION_MODES.join(', ')}`)
+  throw new TypeError(`请选择一个有效的压缩模式。 / mode must be one of ${COMPACTION_MODES.join(', ')}`)
 }
 
 /** An optional identifier (session or preset id): absent, or a non-empty string. */
 export function parseOptionalId(value: unknown): string | undefined {
   if (value === undefined) return undefined
   if (typeof value === 'string' && value.trim().length > 0) return value
-  throw new TypeError('identifier must be a non-empty string')
+  throw new TypeError('会话或预设 ID 需要填写非空字符串。 / identifier must be a non-empty string')
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -109,19 +109,19 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 }
 
 function checkRecord(value: unknown, path: string, keys: readonly string[], check: (field: unknown, path: string) => void): void {
-  if (!isRecord(value)) throw new TypeError(`${path} must be an object`)
+  if (!isRecord(value)) throw new TypeError(`此字段需要填写一个对象。 / ${path} must be an object`)
   for (const [key, field] of Object.entries(value)) {
-    if (!keys.includes(key)) throw new TypeError(`unknown setting "${path}.${key}"`)
+    if (!keys.includes(key)) throw new TypeError(`未识别此设置项，请核对字段名。 / unknown setting "${path}.${key}"`)
     check(field, `${path}.${key}`)
   }
 }
 
 function checkString(value: unknown, path: string): void {
-  if (typeof value !== 'string') throw new TypeError(`${path} must be a string`)
+  if (typeof value !== 'string') throw new TypeError(`此字段需要填写字符串。 / ${path} must be a string`)
 }
 
 function checkNumber(value: unknown, path: string): void {
-  if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError(`${path} must be a finite number`)
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError(`此字段需要填写有限数值。 / ${path} must be a finite number`)
 }
 
 /**
@@ -130,9 +130,9 @@ function checkNumber(value: unknown, path: string): void {
  * merged result against the Config schema.
  */
 export function parseConfigPatch(value: unknown): ConfigPatch {
-  if (!isRecord(value)) throw new TypeError('settings patch must be an object')
+  if (!isRecord(value)) throw new TypeError('要保存设置，请传入一个对象。 / settings patch must be an object')
   const entries = Object.entries(value)
-  if (entries.length === 0) throw new TypeError('settings patch changes nothing')
+  if (entries.length === 0) throw new TypeError('请至少填写一项要保存的设置。 / settings patch changes nothing')
   for (const [key, field] of entries) {
     switch (key) {
       case 'level':
@@ -148,7 +148,7 @@ export function parseConfigPatch(value: unknown): ConfigPatch {
         checkNumber(field, key)
         break
       case 'captureReasoning':
-        if (typeof field !== 'boolean') throw new TypeError('captureReasoning must be a boolean')
+        if (typeof field !== 'boolean') throw new TypeError('是否记录推理内容需要填写 true 或 false。 / captureReasoning must be a boolean')
         break
       case 'summarizer':
         checkRecord(field, key, SUMMARIZER_FIELDS, checkString)
@@ -157,20 +157,20 @@ export function parseConfigPatch(value: unknown): ConfigPatch {
         checkRecord(field, key, OVERRIDE_FIELDS, checkNumber)
         break
       case 'unmatchedSessions':
-        if (!isUnmatchedSessions(field)) throw new TypeError(`unmatchedSessions must be one of ${UNMATCHED_SESSIONS.join(', ')}`)
+        if (!isUnmatchedSessions(field)) throw new TypeError(`请选择未匹配会话的处理方式。 / unmatchedSessions must be one of ${UNMATCHED_SESSIONS.join(', ')}`)
         break
       case 'scopeRules':
-        if (!Array.isArray(field)) throw new TypeError('scopeRules must be an array')
+        if (!Array.isArray(field)) throw new TypeError('作用域规则需要按顺序放在一个数组里。 / scopeRules must be an array')
         field.forEach((rule: unknown, index) => {
           const path = `scopeRules[${index}]`
           checkRecord(rule, path, ['match', 'scope'], checkString)
           for (const required of ['match', 'scope']) {
-            if (!Object.hasOwn(rule as object, required)) throw new TypeError(`${path}.${required} is required`)
+            if (!Object.hasOwn(rule as object, required)) throw new TypeError(`请补全这条作用域规则的必填字段。 / ${path}.${required} is required`)
           }
         })
         break
       default:
-        throw new TypeError(`unknown setting "${key}"`)
+        throw new TypeError(`未识别此设置项，请核对字段名。 / unknown setting "${key}"`)
     }
   }
   return value as ConfigPatch
@@ -222,35 +222,35 @@ const PARAMETERS: Readonly<Record<RemoteParameter, ParameterSpec>> = {
     parse: parseOptionalId,
     jsonSchema: { type: 'string', minLength: 1 },
     optional: true,
-    description: 'Live session to describe; omitted uses the most recently active session.',
+    description: '要查看的活跃会话。省略 ID 时取最近活跃的非子代理会话。 / Live session to describe. Omit the ID to use the most recently active session.',
   },
   level: {
     typeSymbol: `${PACKAGE_NAME}#CompressionLevel`,
     parse: parseLevel,
     jsonSchema: { type: 'integer', enum: [...COMPRESSION_LEVELS] },
     optional: false,
-    description: 'Compression level 1–5.',
+    description: '要保存的压缩档位。保存后立即生效，1 档保留最多上下文，5 档保留最少。 / Compression level to save. Level 1 keeps the most context and level 5 the least. A saved level applies immediately.',
   },
   mode: {
     typeSymbol: `${PACKAGE_NAME}#CompactionMode`,
     parse: parseMode,
     jsonSchema: { type: 'string', enum: [...COMPACTION_MODES] },
     optional: false,
-    description: 'Compaction mode.',
+    description: '要保存的压缩模式。会话在下次使用时重新判断。 / Compaction mode to save. Each session checks it on its next use.',
   },
   presetId: {
     typeSymbol: `${PACKAGE_NAME}#PresetId`,
     parse: parseOptionalId,
     jsonSchema: { type: 'string', minLength: 1 },
     optional: true,
-    description: 'Agent preset id; omitted uses the standard preset.',
+    description: '预设 ID。省略时使用 standard，修改对新会话生效。 / Agent preset ID. Omit it to use standard. Changes to a preset apply to new sessions.',
   },
   patch: {
     typeSymbol: `${PACKAGE_NAME}#ConfigPatch`,
     parse: parseConfigPatch,
     jsonSchema: PATCH_JSON_SCHEMA,
     optional: false,
-    description: 'Live settings to change; overrides and scopeRules replace the whole value.',
+    description: '要为当前 profile 保存的热更新设置。传入 overrides 或 scopeRules 会替换该字段的全部内容。 / Live settings to save to this profile. Supplying overrides or scopeRules replaces that field in full.',
   },
 }
 

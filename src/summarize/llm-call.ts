@@ -40,8 +40,11 @@ export function addUsage(total: CompletionUsage | undefined, next: CompletionUsa
   }
 }
 
+const SUMMARY_ABORTED = '摘要生成已取消。 / Summarization was canceled.'
+const MODEL_REQUEST_FAILED = '摘要模型请求失败 / Summary model request failed'
+
 export function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted === true) throw new SummarizeError('aborted', 'summarization aborted', { cause: signal.reason })
+  if (signal?.aborted === true) throw new SummarizeError('aborted', SUMMARY_ABORTED, { cause: signal.reason })
 }
 
 function message(error: unknown): string {
@@ -87,14 +90,14 @@ export class CallLedger {
     try {
       completion = await this.#llm.complete(full, this.#signal)
     } catch (error) {
-      if (this.#signal?.aborted === true) throw new SummarizeError('aborted', 'summarization aborted', { cause: error })
-      throw new SummarizeError('llm-error', `summarizer model call failed: ${message(error)}`, { cause: error })
+      if (this.#signal?.aborted === true) throw new SummarizeError('aborted', SUMMARY_ABORTED, { cause: error })
+      throw new SummarizeError('llm-error', `${MODEL_REQUEST_FAILED}: ${message(error)}`, { cause: error })
     }
     this.usage = addUsage(this.usage, completion.usage)
     if (completion.provider.length > 0) this.provider = completion.provider
     if (completion.model.length > 0) this.model = completion.model
-    if (completion.finish === 'aborted') throw new SummarizeError('aborted', completion.error ?? 'summarizer model call aborted')
-    if (completion.finish === 'error') throw new SummarizeError('llm-error', `summarizer model call failed: ${completion.error ?? 'unknown error'}`)
+    if (completion.finish === 'aborted') throw new SummarizeError('aborted', completion.error ?? '摘要模型请求已取消。 / The summary model request was canceled.')
+    if (completion.finish === 'error') throw new SummarizeError('llm-error', `${MODEL_REQUEST_FAILED}: ${completion.error ?? '原因未知 / unknown error'}`)
     return completion
   }
 }

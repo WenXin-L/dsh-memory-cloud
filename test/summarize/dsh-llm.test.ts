@@ -120,7 +120,7 @@ describe('createDshLlmClient', () => {
 
     const bare = await createDshLlmClient({ llm }).complete(base({ provider: '' }))
     expect(bare.finish).toBe('error')
-    expect(bare.error).toContain('no provider/model')
+    expect(bare.error).toMatch(/生成摘要需要提供方和模型。.*Summarization requires a provider and a model\./)
     const throwing = await createDshLlmClient({ llm }, { defaultRoute: () => { throw new Error('no service') } }).complete(base({ model: '' }))
     expect(throwing.finish).toBe('error')
     expect(seen).toHaveLength(2)
@@ -140,7 +140,7 @@ describe('createDshLlmClient', () => {
 
     const unknown = await createDshLlmClient(fakeLlm([{ type: 'finish', reason: { kind: 'content-filter' } as never }])).complete(base())
     expect(unknown.finish).toBe('error')
-    expect(unknown.error).toContain('content-filter')
+    expect(unknown.error).toBe('模型返回了未知的结束原因 / Unexpected model finish reason "content-filter"')
 
     const thrown = await createDshLlmClient(fakeLlm(() => (async function* (): AsyncIterable<StreamChunk> {
       throw new Error('middleware exploded')
@@ -152,7 +152,7 @@ describe('createDshLlmClient', () => {
     const { llm } = fakeLlm(waitForAbort)
     const completion = await createDshLlmClient({ llm }, { timeoutMs: 20 }).complete(base())
     expect(completion.finish).toBe('error')
-    expect(completion.error).toContain('timed out after 20 ms')
+    expect(completion.error).toBe('摘要请求超时 / Summary request timed out after 20 ms')
   })
 
   it('forwards caller cancellation as an aborted completion', async () => {
@@ -167,7 +167,7 @@ describe('createDshLlmClient', () => {
     const early = new AbortController()
     early.abort()
     const before = await createDshLlmClient({ llm }).complete(base(), early.signal)
-    expect(before.finish).toBe('aborted')
+    expect(before).toMatchObject({ finish: 'aborted', error: '摘要请求在发出前已取消。 / The summary request was canceled before it started.' })
     expect(seen).toHaveLength(1)
   })
 

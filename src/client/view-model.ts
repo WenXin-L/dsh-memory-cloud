@@ -6,7 +6,7 @@ import type { CompactionMode, CompressionLevel, EffectiveMode, LevelPreset, Toke
 import { COMPACTION_MODES, COMPRESSION_LEVELS, LEVEL_PRESETS } from '../contracts.ts'
 import type { MemoryCloudStatus, TakeoverReport } from '../runtime/status.ts'
 import type { UnmatchedDecision } from '../scope/guard.ts'
-import type { MemoryCloudKey } from './locales.ts'
+import { hostSuccessKey, type MemoryCloudKey } from './locales.ts'
 import type { ActionNotice } from './store.ts'
 
 export type Translate = (key: MemoryCloudKey, params?: Readonly<Record<string, string | number>>) => string
@@ -240,18 +240,15 @@ function jobLines(status: MemoryCloudStatus, t: Translate): FactLine[] {
 }
 
 function takeoverLines(takeover: TakeoverReport, t: Translate): FactLine[] {
+  if (takeover.error !== undefined) return [{ text: t('takeoverError', { message: takeover.error }), tone: 'warn' }]
   if (takeover.kind === 'host') {
     const host = takeover.host
-    if (host === undefined) {
-      return [{ text: takeover.error === undefined ? t('takeoverHostMissing') : t('takeoverError', { message: takeover.error }), tone: 'warn' }]
-    }
+    if (host === undefined) return [{ text: t('takeoverHostMissing'), tone: 'warn' }]
     if (host.active) return [{ text: t('takeoverHostActive'), tone: 'success' }]
     return [{ text: host.engine === undefined ? t('takeoverHostMissing') : t('takeoverHostInactive') }]
   }
   if (!takeover.editable) return [{ text: t('takeoverNoEditor'), muted: true }]
-  if (takeover.presets.length === 0) {
-    return [{ text: takeover.error === undefined ? t('takeoverNoPresets') : t('takeoverError', { message: takeover.error }), muted: true }]
-  }
+  if (takeover.presets.length === 0) return [{ text: t('takeoverNoPresets'), muted: true }]
   return takeover.presets.map(preset => ({
     text: `${t('takeoverPreset', { preset: preset.presetId, state: t(`takeoverState_${preset.state}`) })}${preset.detail === undefined ? '' : ` — ${preset.detail}`}`,
     ...TAKEN_OVER.has(preset.state) ? { tone: 'success' as const } : {},
@@ -365,24 +362,34 @@ export interface NoticeView {
 }
 
 export function noticeView(notice: ActionNotice, t: Translate): NoticeView {
-  if ('failure' in notice) return { tone: 'error', lines: [t('noticeRemoteFailed', { code: notice.failure.code, message: notice.failure.message })] }
+  if ('failure' in notice) {
+    const key = {
+      level: 'noticeLevelRequestFailed', mode: 'noticeModeRequestFailed',
+      takeover: 'noticeTakeoverFailed', restore: 'noticeRestoreFailed',
+    } as const
+    return { tone: 'error', lines: [t(key[notice.action], { code: notice.failure.code, message: notice.failure.message })] }
+  }
   switch (notice.action) {
     case 'level':
       return notice.result.ok
         ? { tone: 'success', lines: [t('noticeLevelSaved', { level: notice.level })] }
-        : { tone: 'error', lines: [t('noticeSettingFailed', { message: notice.result.message })] }
+        : { tone: 'error', lines: [t('noticeLevelWriteFailed', { message: notice.result.message })] }
     case 'mode':
       return notice.result.ok
         ? { tone: 'success', lines: [t('noticeModeSaved', { mode: modeLabel(notice.mode, t) })] }
-        : { tone: 'error', lines: [t('noticeSettingFailed', { message: notice.result.message })] }
+        : { tone: 'error', lines: [t('noticeModeWriteFailed', { message: notice.result.message })] }
     case 'takeover':
     case 'restore': {
       const restoring = notice.action === 'restore'
       const { result } = notice
       if (result.kind === 'host') {
         const { outcome } = result
-        const lines = [t(outcome.ok ? 'noticeHostOk' : 'noticeHostFailed', { message: outcome.message })]
-        if (outcome.restartReasons.length > 0) lines.push(t('noticeRestart', { reasons: outcome.restartReasons.join('; ') }))
+        const key = hostSuccessKey(outcome.application, restoring)
+        const done = key === undefined ? t('noticeHostOk', { message: outcome.message }) : t(key)
+        const lines = [outcome.ok ? done : t(restoring ? 'noticeRestoreFailed' : 'noticeTakeoverFailed', {
+          code: outcome.application, message: t('noticeHostFailed', { message: outcome.message }),
+        })]
+        if (outcome.restartReasons.length > 0) lines.push(t('noticeRestart', { reasons: outcome.restartReasons.join(', ') }))
         return { tone: outcome.ok ? 'success' : 'error', lines }
       }
       if (!result.ok) {

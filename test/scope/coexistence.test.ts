@@ -90,8 +90,8 @@ describe('detectCoexistence', () => {
       const report = detectCoexistence([row])
       expect(report.compactionPlugins, row).toHaveLength(1)
       expect(report.recommendation, row).toBe('assist')
-      expect(report.warnings.zh.some(warning => warning.includes('辅助模式')), row).toBe(true)
-      expect(report.warnings.en.some(warning => warning.includes('assist mode')), row).toBe(true)
+      expect(report.warnings.zh.some(warning => warning.includes('auto') && warning.includes('辅助模式')), row).toBe(true)
+      expect(report.warnings.en.some(warning => warning.includes('auto') && warning.includes('assist mode')), row).toBe(true)
     }
   })
 

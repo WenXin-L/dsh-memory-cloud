@@ -23,5 +23,5 @@ export const inject = ['sessions', 'llm', 'tokenMeter', 'systemPrompt', 'tools',
 
 export function apply(ctx: Context, config: Config): void {
   startMemoryCloud(ctx, config)
-  ctx.logger.info('loaded (level %d, compaction mode %s)', config.level.get(), config.compactionMode.get())
+  ctx.logger.info('记忆云已就位 / Memory Cloud is ready. 压缩档位 / level %d · 压缩模式 / mode %s', config.level.get(), config.compactionMode.get())
 }
