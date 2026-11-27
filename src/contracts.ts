@@ -566,6 +566,9 @@ export interface Clock {
 /** `UserMessage.source.kind` of injected memory blocks (declared in `MessageSourceMap`). */
 export const MEMORY_SOURCE_KIND = 'memory-cloud'
 
+/** A query-matched set of current event revisions admitted with a human message. */
+export const EVENT_MEMORY_SOURCE_KIND = 'memory-cloud-event'
+
 /** `UserMessage.source.kind` of DSH compaction checkpoints. */
 export const COMPACT_CHECKPOINT_SOURCE_KIND = 'compact-checkpoint'
 
@@ -578,7 +581,7 @@ export const RUNTIME_CONTEXT_SOURCE_KIND = 'runtime-context'
  * snapshots. They never reach transcripts or summaries and never make an
  * episode non-empty.
  */
-export const SYNTHETIC_SOURCE_KINDS: readonly string[] = [MEMORY_SOURCE_KIND, COMPACT_CHECKPOINT_SOURCE_KIND, RUNTIME_CONTEXT_SOURCE_KIND]
+export const SYNTHETIC_SOURCE_KINDS: readonly string[] = [MEMORY_SOURCE_KIND, EVENT_MEMORY_SOURCE_KIND, COMPACT_CHECKPOINT_SOURCE_KIND, RUNTIME_CONTEXT_SOURCE_KIND]
 
 /** `LlmRequestPurposeMap` key for summarizer calls; also excluded from session-log upload. */
 export const SUMMARIZE_PURPOSE = 'memory-cloud-summarize'
@@ -592,6 +595,7 @@ export const TOOL_NAMES = {
   hide: 'memory_hide',
   unhide: 'memory_unhide',
   note: 'memory_note',
+  event: 'memory_event',
 } as const
 
 export const COMMAND_NAME = 'memory'

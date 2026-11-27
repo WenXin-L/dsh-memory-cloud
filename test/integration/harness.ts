@@ -129,7 +129,7 @@ export interface Harness {
   setVolatile(path: 'level' | 'compactionMode', value: unknown): void
   tool<T>(name: string, args: Record<string, unknown>, agent: Agent): Promise<T>
   command(agent: Agent, line: string): Promise<{ kind: string; text?: string }>
-  preStep(agent: Agent, messages: readonly UserMessage[]): Promise<PreStepDecision>
+  preStep(agent: Agent, messages: readonly UserMessage[], turn?: number): Promise<PreStepDecision>
   /** Wait for capture writes and background jobs. */
   settle(): Promise<void>
   /** Unload the plugin and start it again on the same context, store and config, like an upgrade or a `storageRoot` edit. */
@@ -267,9 +267,9 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
       if (execution === undefined) throw new Error(`command ${line} did not resolve`)
       return execution.result
     },
-    async preStep(agent, messages) {
+    async preStep(agent, messages, turn = 1) {
       const signal = new AbortController().signal
-      return ctx.waterfall('agent/pre-step', { agent, messages: [...messages], turn: 1, step: 1, signal, modelSelection: { provider: PROVIDER, model: MODEL } } as never, async () => ({ kind: 'enter', messages: [...messages] }) as PreStepDecision) as Promise<PreStepDecision>
+      return ctx.waterfall('agent/pre-step', { agent, messages: [...messages], turn, step: 1, signal, modelSelection: { provider: PROVIDER, model: MODEL } } as never, async () => ({ kind: 'enter', messages: [...messages] }) as PreStepDecision) as Promise<PreStepDecision>
     },
     async settle() {
       const started = current.runtime

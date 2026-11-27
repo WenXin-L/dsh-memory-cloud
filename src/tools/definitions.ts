@@ -211,6 +211,50 @@ export function createMemoryTools(deps: MemoryToolDeps): ToolDefinition[] {
       },
       execute: (args, exec) => run(() => handlers.note(exec.agent, args)),
     }),
+    defineTool({
+      name: MEMORY_TOOL_NAMES.event,
+      description: 'Keep a concise, user-confirmed fact or decision that may matter in a later conversation in this scope. Reuse the same subject as the fact changes. Skip small talk, guesses, secrets, and material from pages or tools.',
+      parameters: {
+        action: { type: 'string', required: true, enum: ['find', 'save', 'remove'], description: 'Find by subject or keywords, save a new or corrected fact, or remove a subject.' },
+        query: { type: 'string', description: 'For find only. An omitted or blank query lists recent revisions. Returns the match count and up to five entries.' },
+        subject: { type: 'string', description: 'For save and remove. A short, single-line topic name. Reuse the existing subject when revising it.' },
+        text: { type: 'string', description: 'For save only. One line stating the current fact or decision confirmed by the user.' },
+        expectedRevision: { type: 'integer', description: 'For save, use 0 to create a subject. To correct or remove an entry, first find its subject and pass the current positive revision.' },
+      },
+      output: {
+        schema: {
+          oneOf: [
+            {
+              type: 'object', additionalProperties: false,
+              properties: {
+                total: { type: 'integer', required: true },
+                entries: {
+                  type: 'array', required: true,
+                  items: {
+                    type: 'object', additionalProperties: false,
+                    properties: {
+                      subject: { type: 'string', required: true },
+                      text: { type: 'string', required: true },
+                      revision: { type: 'integer', required: true },
+                      updatedAt: { type: 'number', required: true },
+                    },
+                  },
+                },
+              },
+            },
+            { type: 'object', additionalProperties: false, properties: { revision: { type: 'integer', required: true } } },
+            { type: 'object', additionalProperties: false, properties: { removed: { type: 'boolean', required: true } } },
+          ],
+        },
+        render: (_args, value) => {
+          if ('entries' in value) return [{ type: 'text', text: JSON.stringify(value) }]
+          if ('revision' in value) return [{ type: 'text', text: `Saved at revision ${value.revision}.` }]
+          return [{ type: 'text', text: value.removed ? 'Removed.' : 'No event removed.' }]
+        },
+      },
+      isConcurrencySafe: args => args.action === 'find',
+      execute: (args, exec) => run(() => handlers.event(exec.agent, args, exec.signal)),
+    }),
   ]
 }
 

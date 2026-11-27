@@ -10,12 +10,13 @@ import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { describe, expect, it, vi } from 'vitest'
 import type { ScopeDecision, ScopeId } from '../../src/contracts.ts'
 import {
-  COMPACT_CHECKPOINT_SOURCE_KIND, MEMORY_SOURCE_KIND, OWNER_SCOPE, RUNTIME_CONTEXT_SOURCE_KIND, SYNTHETIC_SOURCE_KINDS,
+  COMPACT_CHECKPOINT_SOURCE_KIND, EVENT_MEMORY_SOURCE_KIND, MEMORY_SOURCE_KIND, OWNER_SCOPE, RUNTIME_CONTEXT_SOURCE_KIND, SYNTHETIC_SOURCE_KINDS,
 } from '../../src/contracts.ts'
 import { EMPTY_EPISODE_ERROR } from '../../src/runtime/sources.ts'
+import { createEventMemory, EventMemoryError } from '../../src/store/event-memory.ts'
 import { createProfileNotes, type ProfileNoteResult } from '../../src/store/profile-notes.ts'
 import { createMemorySearch, createMemoryTools, MEMORY_TOOL_NAMES, recallPolicy, registerMemoryTools } from '../../src/tools/index.ts'
-import type { FlagOutput, MemoryToolCaller, MemoryToolDeps, ReadOutput, SearchOutput, TimelineOutput } from '../../src/tools/index.ts'
+import type { EventFindOutput, FlagOutput, MemoryToolCaller, MemoryToolDeps, ReadOutput, SearchOutput, TimelineOutput } from '../../src/tools/index.ts'
 import { assistantRecord, at, estimator, eventRecord, stepRecord, toolResultRecord, userRecord, withTempStore } from './helpers.ts'
 import type { FakeStore, SeedEpisode } from './helpers.ts'
 
@@ -40,7 +41,7 @@ const rawRecords = [
   userRecord('我把红色雨伞忘在咖啡馆了', rawAt(1), 102),
   userRecord('<system-reminder>cwd: /work</system-reminder>', rawAt(1), 103, { kind: RUNTIME_CONTEXT_SOURCE_KIND }),
   assistantRecord('别担心，明天可以回去问店员。', rawAt(2), 104),
-  stepRecord(rawAt(3), 105),
+  userRecord('<memory-events>已确认的决定</memory-events>', rawAt(3), 105, { kind: EVENT_MEMORY_SOURCE_KIND }),
   userRecord('<memory-cloud>旧记忆</memory-cloud>', rawAt(3), 106, { kind: MEMORY_SOURCE_KIND }),
   userRecord('好的，谢谢你提醒我。', rawAt(4), 107, null),
   assistantRecord('我查一下营业时间。', rawAt(5), 108, { id: 'c1', name: 'find_shop', arguments: '{"name":"咖啡馆"}' }),
@@ -90,11 +91,13 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
     await store.seed(owner, ownerCorpus)
     await store.seed(group, [{ id: GROUP_CAT, sessionId: 's-g', startedAt: at(2026, 11, 21, 12), gist: '群里拼单买猫粮。', summary: '群友拼单买猫粮。', keywords: ['猫粮'] }])
     const state: Harness['state'] = { pressure: 0, limit: 8192, decision: ownerDecision, scopeError: undefined }
+    const clock = { now: () => NOW }
     const notes = createProfileNotes(store.root)
     vi.spyOn(notes, 'apply')
     const deps: MemoryToolDeps = {
       store,
       notes,
+      events: createEventMemory(store.root, clock),
       search: createMemorySearch({ store, estimator }),
       scopeFor: vi.fn(() => {
         if (state.scopeError !== undefined) throw state.scopeError
@@ -103,7 +106,7 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
       pressure: () => state.pressure,
       recallLimitTokens: () => state.limit,
       estimator,
-      clock: { now: () => NOW },
+      clock,
     }
     const tools = new Map(createMemoryTools(deps).map(definition => [definition.name, definition]))
     const call = async <T,>(name: string, args: Record<string, unknown>, caller: MemoryToolCaller | null = agent) => {
@@ -146,6 +149,21 @@ describe('tool definitions', () => {
         action: expect.objectContaining({ type: 'string', enum: ['list', 'add', 'replace', 'remove'] }),
         text: expect.objectContaining({ type: 'string' }), oldText: expect.objectContaining({ type: 'string' }),
       })
+      const event = service.definitions().find(definition => definition.name === 'memory_event')!
+      expect(event.parameters.required).toEqual(['action'])
+      expect(event.parameters.properties).toEqual({
+        action: expect.objectContaining({ type: 'string', enum: ['find', 'save', 'remove'] }),
+        query: expect.objectContaining({ type: 'string' }),
+        subject: expect.objectContaining({ type: 'string' }),
+        text: expect.objectContaining({ type: 'string' }),
+        expectedRevision: expect.objectContaining({ type: 'integer' }),
+      })
+      for (const invalid of [
+        {}, { revision: '2' }, { revision: 2, removed: true }, { removed: true, text: 'private' },
+        { total: 1, entries: [{ subject: 'topic', text: 'fact', revision: 1 }] },
+      ]) {
+        expect(validateJsonSchemaValue(event.output.schema, invalid)).not.toEqual([])
+      }
       expect(() => registerMemoryTools({ tools: service }, deps)).toThrow(/already registered/)
       expect(service.definitions()).toHaveLength(names.length)
       dispose()
@@ -293,7 +311,7 @@ describe('memory_read', () => {
       expect(plain.value).toMatchObject({ offset: 0, count: 7, total: 7, hiddenRecords: 9 })
       expect(plain.value.text).toBe(conversationLines.join('\n'))
       for (const kind of [...SYNTHETIC_SOURCE_KINDS, 'tool-registry']) expect(plain.text).not.toContain(`[${kind}]`)
-      expect(plain.text).not.toMatch(/system-reminder|memory-cloud|compacted-summary|\[(compaction|request|step|turn)\//)
+      expect(plain.text).not.toMatch(/system-reminder|memory-cloud|memory-events|compacted-summary|\[(compaction|request|step|turn)\//)
 
       const system = await call<ReadOutput>(MEMORY_TOOL_NAMES.read, { id: RAW, level: 'raw', limit: 200, includeSystem: true })
       expect(system.value).toMatchObject({ offset: 0, count: 16, total: 16 })
@@ -303,7 +321,7 @@ describe('memory_read', () => {
       expect(system.value.text).toContain('#103 10:01 user[runtime-context]: <system-reminder>cwd: /work</system-reminder>')
       expect(system.value.text).toContain('#114 10:07 user[tool-registry]: Tools changed: find_shop was added.')
       expect(system.value.text).toContain('#111 10:06 [compaction/summary-error]: {"error":"summary failed"}')
-      expect(pageSeqs(system.value.text)).toEqual([102, 103, 104, 106, 107, 108, 109, 110, 111, 113, 114, 116])
+      expect(pageSeqs(system.value.text)).toEqual([102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 113, 114, 116])
       expect(system.text).toContain('[records 0–15 of 16; end]')
     })
   })
@@ -331,7 +349,7 @@ describe('memory_read', () => {
         offset = value.nextOffset
       }
       expect(systemPages).toBe(4)
-      expect(systemSeqs).toEqual([102, 103, 104, 106, 107, 108, 109, 110, 111, 113, 114, 116])
+      expect(systemSeqs).toEqual([102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 113, 114, 116])
     })
   })
 
@@ -479,6 +497,176 @@ describe('memory_note', () => {
         expect(resolve.mock.calls).toEqual([[agent]])
       }
       expect(deps.notes.apply).not.toHaveBeenCalled()
+    })
+  })
+})
+
+describe('memory_event', () => {
+  const name = 'memory_event'
+  const subject = 'Atlas release'
+  const original = 'Ship on Friday.'
+  const correction = 'Ship on Monday.'
+  const create = { action: 'save', subject, text: original, expectedRevision: 0 }
+  const find = { action: 'find', query: subject }
+
+  it('creates, finds, revises and removes the same subject with content-free write receipts', async () => {
+    await withHarness(async ({ call }) => {
+      const saved = await call<{ revision: number }>(name, create)
+      expect(saved.value).toEqual({ revision: 1 })
+      expect(saved.text).toBe('Saved at revision 1.')
+      const initial = await call<EventFindOutput>(name, find)
+      const entry = { subject, text: original, revision: 1, updatedAt: NOW }
+      expect(initial.value).toEqual({ total: 1, entries: [entry] })
+      expect(JSON.parse(initial.text)).toEqual(initial.value)
+
+      const firstRevision = initial.value.entries[0]!.revision
+      const updated = await call<{ revision: number }>(name, { ...create, text: correction, expectedRevision: firstRevision })
+      expect(updated.value).toEqual({ revision: 2 })
+      for (const stale of [
+        { ...create, text: 'Stale overwrite', expectedRevision: firstRevision },
+        { action: 'remove', subject, expectedRevision: firstRevision },
+      ]) {
+        await expect(call(name, stale)).rejects.toMatchObject({ code: 'MEMORY_REVISION_CONFLICT', message: expect.stringMatching(/find.*revision/i) })
+      }
+      const current = await call<EventFindOutput>(name, find)
+      expect(current.value).toEqual({ total: 1, entries: [{ ...entry, text: correction, revision: 2 }] })
+      const remove = { action: 'remove', subject, expectedRevision: current.value.entries[0]!.revision }
+      const removed = await call(name, remove)
+      expect(removed).toEqual({ value: { removed: true }, text: 'Removed.' })
+      expect((await call(name, remove)).value).toEqual({ removed: false })
+      expect((await call(name, find)).value).toEqual({ total: 0, entries: [] })
+    })
+  })
+
+  it('returns the five most recently revised entries or the five best subject and text matches', async () => {
+    await withHarness(async ({ call }) => {
+      await call(name, { ...create, subject: 'Compass' })
+      for (let i = 1; i <= 6; i++) {
+        await call(name, { ...create, subject: `Stop ${i}`, text: 'Check the compass here.' })
+      }
+      for (const args of [{ action: 'find' }, { action: 'find', query: '' }, { action: 'find', query: '   ' }]) {
+        const { value } = await call<EventFindOutput>(name, args)
+        expect(value.total).toBe(7)
+        expect(value.entries.map(entry => entry.subject)).toEqual(['Stop 6', 'Stop 5', 'Stop 4', 'Stop 3', 'Stop 2'])
+      }
+      const match = await call<EventFindOutput>(name, { action: 'find', query: 'compass' })
+      expect(match.value.total).toBe(7)
+      expect(match.value.entries).toHaveLength(5)
+      expect(match.value.entries[0]?.subject).toBe('Compass')
+      expect((await call(name, { action: 'find', query: 'volcano' })).value).toEqual({ total: 0, entries: [] })
+    })
+  })
+
+  it('checks the caller on every operation and again before returning the room’s events', async () => {
+    await withHarness(async ({ call, deps, state }) => {
+      const resolve = vi.mocked(deps.scopeFor)
+      await call(name, create)
+      const room = { scope: group, capture: true, private: false, reason: 'room' }
+      state.decision = room
+      expect((await call(name, find)).value).toEqual({ entries: [], total: 0 })
+      await call(name, { ...create, text: 'Room decision.' })
+      state.decision = { ...room, capture: false }
+      const listed = await call<EventFindOutput>(name, find)
+      expect(listed.value.entries).toEqual([{ subject, text: 'Room decision.', revision: 1, updatedAt: NOW }])
+      const remove = { action: 'remove', subject, expectedRevision: 1 }
+      for (const mutation of [{ ...create, expectedRevision: 1 }, remove]) {
+        await expect(call(name, mutation)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_DENIED' })
+      }
+      state.decision = { ...ownerDecision, private: false }
+      for (const args of [find, create, remove]) {
+        await expect(call(name, args)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_DENIED' })
+      }
+      state.decision = room
+      expect((await call(name, remove)).value).toEqual({ removed: true })
+      state.decision = ownerDecision
+      expect((await call<EventFindOutput>(name, find)).value.entries[0]?.text).toBe(original)
+      // Eleven calls to the tool, with a second scope check on the three successful finds.
+      expect(resolve.mock.calls).toEqual(Array.from({ length: 14 }, () => [agent]))
+    })
+  })
+
+  it('validates action-specific arguments and caller identity before accessing storage', async () => {
+    await withHarness(async ({ call, deps, state }) => {
+      const accesses = [vi.spyOn(deps.events, 'list'), vi.spyOn(deps.events, 'save'), vi.spyOn(deps.events, 'remove')]
+      for (const args of [{}, { action: 'list' }, { ...find, query: 3 }, { ...create, expectedRevision: 1.5 }]) {
+        await expect(call(name, args)).rejects.toBeInstanceOf(ToolArgsError)
+      }
+      for (const args of [
+        { ...find, subject }, { ...find, scope: group }, { ...create, scope: group }, { ...create, query: subject },
+        { action: 'save', subject, text: original }, { ...create, subject: '  ' }, { ...create, text: '' },
+        { ...create, expectedRevision: -1 }, { ...create, expectedRevision: Number.MAX_SAFE_INTEGER + 1 },
+        { action: 'remove', subject }, { action: 'remove', subject, expectedRevision: 0 },
+        { action: 'remove', subject, expectedRevision: 1, text: original },
+      ]) await expect(call(name, args), JSON.stringify(args)).rejects.toMatchObject({ code: 'MEMORY_INVALID_ARGS' })
+      state.scopeError = new Error('scope lookup failed')
+      for (const args of [find, create, { action: 'remove', subject, expectedRevision: 1 }]) {
+        await expect(call(name, args, null)).rejects.toMatchObject({ code: 'MEMORY_NO_AGENT' })
+        await expect(call(name, args)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_UNAVAILABLE' })
+      }
+      for (const access of accesses) expect(access).not.toHaveBeenCalled()
+    })
+  })
+
+  it('fits structured and rendered finds to the recall cap and keeps writes available under pressure', async () => {
+    await withHarness(async ({ call, deps, state }) => {
+      const text = '已确认"东"\\北。'.repeat(60)
+      await call(name, { ...create, text })
+      state.limit = 160
+      for (const [pressure, cap] of [[0, 160], [0.7, 80]] as const) {
+        state.pressure = pressure
+        const found = await call<EventFindOutput>(name, find)
+        expect(estimator.estimate(JSON.stringify(found.value))).toBeLessThanOrEqual(cap)
+        expect(estimator.estimate(found.text)).toBeLessThanOrEqual(cap)
+        expect(found.value.entries[0]).toMatchObject({ subject, revision: 1, text: expect.stringMatching(/…$/u) })
+      }
+      state.limit = 1
+      await expect(call(name, find)).rejects.toMatchObject({ code: 'MEMORY_RECALL_PAUSED' })
+      state.pressure = 0.95
+      const list = vi.spyOn(deps.events, 'list')
+      await expect(call(name, find)).rejects.toMatchObject({ code: 'MEMORY_RECALL_PAUSED', message: expect.stringContaining('95% full') })
+      expect(list).not.toHaveBeenCalled()
+      expect((await call(name, { ...create, text: correction, expectedRevision: 1 })).value).toEqual({ revision: 2 })
+      expect((await call(name, { action: 'remove', subject, expectedRevision: 2 })).value).toEqual({ removed: true })
+    })
+  })
+
+  it('distinguishes store validation and capacity errors without echoing private input', async () => {
+    await withHarness(async ({ call, deps }) => {
+      const invalid = call(name, { ...create, text: 'private\nfact' })
+      await expect(invalid).rejects.toMatchObject({ code: 'MEMORY_INVALID_ARGS', message: expect.stringMatching(/line/) })
+      await expect(invalid).rejects.not.toThrow(/private|events\.json/)
+      vi.spyOn(deps.events, 'save').mockRejectedValueOnce(new EventMemoryError('/private/scope', 'capacity'))
+      const full = call(name, create)
+      await expect(full).rejects.toMatchObject({ code: 'MEMORY_EVENT_CAPACITY' })
+      await expect(full).rejects.not.toThrow(/private|events\.json/)
+    })
+  })
+
+  it('withholds a private lookup if the session moves to another scope while reading', async () => {
+    await withHarness(async ({ call, deps, state }) => {
+      await call(name, create)
+      const ownerList = deps.events.list.bind(deps.events)
+      vi.spyOn(deps.events, 'list').mockImplementationOnce(async scope => {
+        const entries = await ownerList(scope)
+        state.decision = { ...ownerDecision, scope: group, private: false }
+        return entries
+      })
+      await expect(call(name, find)).rejects.toMatchObject({ code: 'MEMORY_SCOPE_DENIED' })
+      expect((await call<EventFindOutput>(name, find)).value.entries).toEqual([])
+    })
+  })
+
+  it('keeps raw storage exceptions out of all three tool responses', async () => {
+    await withHarness(async ({ call, deps }) => {
+      const failure = new Error('EIO at /private/scopes/owner/events.json containing a private fact')
+      vi.spyOn(deps.events, 'list').mockRejectedValue(failure)
+      vi.spyOn(deps.events, 'save').mockRejectedValue(failure)
+      vi.spyOn(deps.events, 'remove').mockRejectedValue(failure)
+      for (const args of [find, create, { action: 'remove', subject, expectedRevision: 1 }]) {
+        const response = call(name, args)
+        await expect(response).rejects.toMatchObject({ code: 'MEMORY_EVENT_STORE_ERROR' })
+        await expect(response).rejects.not.toThrow(/private|events\.json|EIO/)
+      }
     })
   })
 })

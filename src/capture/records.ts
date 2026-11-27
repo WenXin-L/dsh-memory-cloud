@@ -1,4 +1,4 @@
-import { MEMORY_SOURCE_KIND, SYNTHETIC_SOURCE_KINDS, type RawEventRecord } from '../contracts.ts'
+import { EVENT_MEMORY_SOURCE_KIND, MEMORY_SOURCE_KIND, SYNTHETIC_SOURCE_KINDS, type RawEventRecord } from '../contracts.ts'
 
 /**
  * Records whose `user/message` source kind is one of the shared
@@ -11,7 +11,7 @@ const SYNTHETIC_KINDS: ReadonlySet<string> = new Set(SYNTHETIC_SOURCE_KINDS)
 export { SYNTHETIC_SOURCE_KINDS }
 
 /** `user/message` source kinds that are never written to the raw archive. */
-export const EXCLUDED_SOURCE_KINDS: ReadonlySet<string> = new Set([MEMORY_SOURCE_KIND])
+export const EXCLUDED_SOURCE_KINDS: ReadonlySet<string> = new Set([MEMORY_SOURCE_KIND, EVENT_MEMORY_SOURCE_KIND])
 
 type JsonObject = Readonly<Record<string, unknown>>
 
