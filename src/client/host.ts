@@ -52,11 +52,19 @@ export interface LocaleLike extends HostObservable<LocaleSnapshot> {
   register(ns: string, dictionaries: { readonly en: Readonly<Record<string, string>>; readonly zh: Readonly<Record<string, string>> }): () => void
 }
 
+/**
+ * One slot registration. `key` addresses a keyed slot (the bundle's own card);
+ * `id`, `order` and `label` register a list entry, such as a row in the
+ * Settings page's section list.
+ */
 export interface SlotRegistration {
   readonly name: string
-  readonly key: string
+  readonly key?: string
+  readonly id?: string
+  readonly order?: number
+  readonly label?: () => string
   readonly locale: string
-  readonly inject: () => object
+  readonly inject?: () => object
 }
 
 export interface SlotsLike {

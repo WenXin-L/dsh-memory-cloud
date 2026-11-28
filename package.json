@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-cloud-brain",
-  "version": "0.1.0",
+  "version": "0.2.3",
   "description": "Layered local memory for DeepSeek Harness. Past sessions return as summaries, with an optional context compaction engine.",
   "license": "GPL-3.0-only",
   "repository": {
