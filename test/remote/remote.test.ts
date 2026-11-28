@@ -62,6 +62,7 @@ describe('wire contract', () => {
   it('accepts known live fields with JSON types in a settings patch', () => {
     const patch = {
       level: 2,
+      timeAwareness: true,
       idleMinutes: 5,
       captureReasoning: false,
       summarizer: { model: 'deepseek-chat' },
@@ -79,6 +80,7 @@ describe('wire contract', () => {
       [JSON.parse('{"__proto__": {"level": 1}}'), '未识别此设置项，请核对字段名。 / unknown setting "__proto__"'],
       [{ level: 7 }, '请选择一个有效的压缩档位。 / level must be one of 1, 2, 3, 4, 5'],
       [{ compactionMode: 'turbo' }, '请选择一个有效的压缩模式。 / mode must be one of auto, engine, assist, off'],
+      [{ timeAwareness: 'true' }, '时间感知需要填写 true 或 false。 / timeAwareness must be a boolean'],
       [{ idleMinutes: '5' }, '此字段需要填写有限数值。 / idleMinutes must be a finite number'],
       [{ captureReasoning: 1 }, '是否记录推理内容需要填写 true 或 false。 / captureReasoning must be a boolean'],
       [{ summarizer: { temperature: 'x' } }, '未识别此设置项，请核对字段名。 / unknown setting "summarizer.temperature"'],
@@ -125,7 +127,10 @@ describe('wire contract', () => {
     expect(getConfig?.parameters).toEqual([])
     const [setConfig] = contribution.descriptors.filter(descriptor => descriptor.method === 'setConfig')
     expect(setConfig?.parameters[0]?.acceptsUndefined).toBeUndefined()
-    expect(setConfig?.parameters[0]?.codec.jsonSchema).toMatchObject({ type: 'object', minProperties: 1, additionalProperties: false })
+    expect(setConfig?.parameters[0]?.codec.jsonSchema).toMatchObject({
+      type: 'object', minProperties: 1, additionalProperties: false,
+      properties: { timeAwareness: { type: 'boolean' } },
+    })
     expect(() => setConfig?.parameters[0]?.codec.create().parse({ storageRoot: '/x' })).toThrow('未识别此设置项，请核对字段名。 / unknown setting "storageRoot"')
   })
 })
@@ -241,7 +246,7 @@ describe('registered with the runtime', () => {
     const h = harness = await createHarness({ engine: 'none', level: 3 })
     const remote = h.ctx.get(REMOTE_SERVICE) as MemoryCloudRemote
     const view = await remote.getConfig()
-    expect(view.config).toMatchObject({ level: 3, idleMinutes: 30, overrides: {}, scopeRules: [], summarizer: { model: 'deepseek-flash' } })
+    expect(view.config).toMatchObject({ level: 3, timeAwareness: false, idleMinutes: 30, overrides: {}, scopeRules: [], summarizer: { model: 'deepseek-flash' } })
     expect(view.defaults).toEqual({ ...view.config, level: 3, compactionMode: 'auto' })
 
     const conversation = await h.conversation('remote-session')
@@ -249,15 +254,23 @@ describe('registered with the runtime', () => {
     expect(before.agent?.scope.scope).toBe('owner')
 
     await expect(remote.setConfig({
+      timeAwareness: true,
       idleMinutes: 5,
       overrides: { memoryBudgetTokens: 2048 },
       scopeRules: [{ match: 'session:remote-*', scope: 'remote-$1' }],
     })).resolves.toEqual({ ok: true, via: 'settings' })
+    expect(h.config.timeAwareness.get()).toBe(true)
     expect(h.config.idleMinutes.get()).toBe(5)
     const after = await remote.status('remote-session')
     expect(after.agent?.budget.memoryBudgetTokens).toBe(2048)
     expect(after.agent?.scope).toMatchObject({ scope: 'remote-session', private: false })
-    expect((await remote.getConfig()).config).toMatchObject({ idleMinutes: 5, overrides: { memoryBudgetTokens: 2048 }, scopeRules: [{ match: 'session:remote-*', scope: 'remote-$1' }] })
+    expect(await remote.getConfig()).toMatchObject({
+      config: { timeAwareness: true, idleMinutes: 5, overrides: { memoryBudgetTokens: 2048 }, scopeRules: [{ match: 'session:remote-*', scope: 'remote-$1' }] },
+      defaults: { timeAwareness: false },
+    })
+
+    await expect(remote.setConfig({ timeAwareness: false })).resolves.toEqual({ ok: true, via: 'settings' })
+    expect((await remote.getConfig()).config.timeAwareness).toBe(false)
 
     await expect(remote.setConfig({ idleMinutes: 0 })).resolves.toEqual({ ok: false, message: '$.idleMinutes expected number >= 1 but got 0' })
     await expect(remote.setConfig({ scopeRules: [{ match: ' ', scope: 'x' }] })).resolves.toEqual({ ok: false, message: '请填写作用域规则的匹配式。 / scopeRules[0].match must not be empty' })

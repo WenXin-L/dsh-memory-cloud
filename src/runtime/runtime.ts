@@ -83,6 +83,7 @@ import type {
 import { createSummaryService } from './summaries.ts'
 import type { SummaryService } from './summaries.ts'
 import { createTakeoverStateFile } from './takeover-state.ts'
+import { attachTimeAwareness } from './time-awareness.ts'
 
 export const PLUGIN_NAME = 'dsh-memory-cloud-brain'
 export const STORAGE_DIR = 'memory-cloud'
@@ -631,6 +632,7 @@ export function startMemoryCloud(ctx: Context, config: Config, options: MemoryCl
 
   ctx.provide(MEMORY_CLOUD_SERVICE, service)
   registerMemoryCloudRemote(ctx, api, createConfigAccess({ config, write: writeConfig, changed: settingsChanged }))
+  attachTimeAwareness(ctx, () => config.timeAwareness.get(), sessionOf)
 
   ctx.on('session/created', session => guard('session/created', () => {
     descriptors.delete(session.id)

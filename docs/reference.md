@@ -8,7 +8,7 @@
 
 新会话开始时和上下文压缩后，`<memory-cloud>` 记忆块会把相处档案、远期总结和近期摘要带回上下文。选择**接管压缩**后，记忆块本身就是 DSH 的压缩检查点，被替换的区间同时封存为一个片段。五个**压缩档位**随时可切换，修改立即生效。
 
-> `0.2.3` 是开发者预览版。端到端测试在 DSH `0.2.2-rc.5` 上运行，使用假模型。[下载安装包](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.2.3) · [更新日志](../CHANGELOG.md) · [局限与尚未验证的部分](#局限与尚未验证的部分)
+> `0.3.0` 是开发者预览版。端到端测试在 DSH `0.2.2-rc.5` 上运行，使用假模型。[下载安装包](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.3.0) · [更新日志](../CHANGELOG.md) · [局限与尚未验证的部分](#局限与尚未验证的部分)
 
 ## 目录
 
@@ -156,10 +156,10 @@ $$
 
 ### Web / headless profile（CLI）
 
-从发布页下载 `dsh-memory-cloud-brain-0.2.3.tgz`，在下载目录运行下面的命令。重启 DSH 后，在 **Plugins** 检查记忆云已启用。[GitHub Release](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.2.3)
+从发布页下载 `dsh-memory-cloud-brain-0.3.0.tgz`，在下载目录运行下面的命令。重启 DSH 后，在 **Plugins** 检查记忆云已启用。[GitHub Release](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.3.0)
 
 ```sh
-dsh plugin --profile web add ./dsh-memory-cloud-brain-0.2.3.tgz
+dsh plugin --profile web add ./dsh-memory-cloud-brain-0.3.0.tgz
 ```
 
 也可直接从 GitHub 源码安装。这条路径尚未经端到端测试。
@@ -183,8 +183,8 @@ dsh plugin --profile web add "$PWD"
 要从当前源码生成自己的安装包，可以运行 `npm pack` 后再安装。
 
 ```sh
-npm pack                     # 生成 dsh-memory-cloud-brain-0.2.3.tgz
-dsh plugin --profile web add ./dsh-memory-cloud-brain-0.2.3.tgz
+npm pack                     # 生成 dsh-memory-cloud-brain-0.3.0.tgz
+dsh plugin --profile web add ./dsh-memory-cloud-brain-0.3.0.tgz
 ```
 
 headless 和 SDK 宿主使用同样的安装方式，把 `--profile web` 替换为宿主使用的 profile，例如 `--profile headless`。安装后的引擎切换见 [headless / SDK](#headless--sdk)。
@@ -257,6 +257,7 @@ headless 没有输入斜杠命令的界面。请按宿主提供的入口操作�
 
 | 在高级设置中要改什么 | 对应字段及效果 |
 |---|---|
+| 时间感知 | `timeAwareness` 默认关闭。开启后，给模型收到的会话消息加上中国标准时间前缀 |
 | 后台总结模型 | `summarizer.provider`、`summarizer.model`、`summarizer.reasoningEffort` |
 | 捕获与遗忘 | `idleMinutes`、`idleCompactRatio`、`halfLifeDays`、`maxEpisodeTokens`、`captureReasoning` |
 | 单项档位覆盖 | `overrides.*` 留空时沿用档位。灰字显示当前会话按模型算出的实际值，未知时显示预设上限。手动填入同一个上限会跳过上一档的限制，结果可能大于留空时的实际值。[压缩档位](#压缩档位默认-3) |
@@ -265,6 +266,12 @@ headless 没有输入斜杠命令的界面。请按宿主提供的入口操作�
 **放弃修改**撤回表单中尚未保存的编辑。**恢复默认**在表单里填入默认值，并清空表单中的作用域规则。点击**保存**后，这些改动才会写入当前配置。浏览器先检查数字范围和 `$n` 引用的通配符个数，宿主在写入前再按配置 schema 校验。只要有一项未通过，整次修改都不会写入。
 
 保存成功即写入当前 profile 的 `cordis.patch.yml` 并生效。设置页通过 DSH Typert Remote 的 SRC 模式联系宿主。连接不可用时，仍可使用 `/memory` 命令或手动编辑该文件。`storageRoot` 只可手动编辑，改完需重启 DSH。
+
+### 时间感知
+
+在「记忆云 → 高级」开启**时间感知**并保存。从下一次会话请求起，模型会看到 `[Sat 2026-11-28 02:32:11 CST]` 形式的前缀。时间来自每条消息在会话中的记录，统一使用中国标准时间。恢复旧会话或重试时，同一条消息沿用原时间。压缩新生成的检查点使用自己的记录时间。
+
+时间感知适用于会话请求中的系统提示、用户消息、助手回复和工具结果。模型支持的会话内工具更新也会带前缀。前缀只在发送请求时生成，聊天界面、原文存档和后台总结沿用各自的内容。缺少有效时间的消息以及采用未识别回放格式的助手消息会省略前缀。此功能依赖 DSH 0.2 的适配器发送接口，已在 DSH `0.2.2-rc.5` 上验证。
 
 ### 压缩档位（默认 3）
 
@@ -307,6 +314,7 @@ headless 没有输入斜杠命令的界面。请按宿主提供的入口操作�
   config:
     level: 3
     compactionMode: auto
+    timeAwareness: false
     idleMinutes: 30
     overrides:
       memoryBudgetTokens: 16000
@@ -318,6 +326,7 @@ headless 没有输入斜杠命令的界面。请按宿主提供的入口操作�
 |---|---|---|
 | `level` | `3` | 1–5 档的压缩档位 |
 | `compactionMode` | `auto` | 可选 `auto`、`engine`、`assist`、`off` |
+| `timeAwareness` | `false` | 启用模型请求中的中国标准时间前缀，保存后立即生效 |
 | `storageRoot` | 空，即 `$DSH_HOME/memory-cloud` | 存储根目录。修改后重启 DSH |
 | `idleMinutes` | `30` | 空闲多少分钟后封存尚未压缩的会话尾部。最少 1 分钟 |
 | `idleCompactRatio` | `0.5` | 空闲时上下文压力超过这个比例，就调用 `compactNow()`。可填 0–1 |

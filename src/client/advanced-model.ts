@@ -1,6 +1,6 @@
 /**
- * Pure model of the Advanced section: a string-valued form draft seeded from
- * the live settings, its validation, and the `setConfig` patch it implies.
+ * Pure model of the Advanced section: a form draft seeded from the live
+ * settings, its validation, and the `setConfig` patch it implies.
  */
 import type { CompressionLevel, ResolvedBudget, ScopeRule, TokenBudget } from '../contracts.ts'
 import { LEVEL_PRESETS } from '../contracts.ts'
@@ -36,6 +36,7 @@ export interface DraftRule {
 }
 
 export interface ConfigDraft {
+  readonly timeAwareness: boolean
   readonly summarizer: Readonly<Record<SummarizerField, string>>
   readonly numbers: Readonly<Record<NumberField, string>>
   readonly captureReasoning: boolean
@@ -47,6 +48,7 @@ export interface ConfigDraft {
 
 export function draftOf(config: VolatileConfig): ConfigDraft {
   return {
+    timeAwareness: config.timeAwareness,
     summarizer: { ...config.summarizer },
     numbers: Object.fromEntries(NUMBER_FIELDS.map(field => [field, String(config[field])])) as Record<NumberField, string>,
     captureReasoning: config.captureReasoning,
@@ -113,6 +115,8 @@ export function readDraft(draft: ConfigDraft, base: VolatileConfig, t: Translate
   const errors: Record<string, string> = {}
   const patch: { -readonly [K in keyof ConfigPatch]: ConfigPatch[K] } = {}
 
+  if (draft.timeAwareness !== base.timeAwareness) patch.timeAwareness = draft.timeAwareness
+
   const summarizer: Partial<Record<SummarizerField, string>> = {}
   for (const field of SUMMARIZER_FIELDS) {
     const value = draft.summarizer[field].trim()
@@ -170,6 +174,7 @@ export function rebaseDraft(draft: ConfigDraft, previous: VolatileConfig, next: 
   const fresh = draftOf(next)
   const rules = draft.scopeRules.map(rule => ({ match: rule.match.trim(), scope: rule.scope.trim() }))
   return {
+    timeAwareness: draft.timeAwareness === previous.timeAwareness ? fresh.timeAwareness : draft.timeAwareness,
     summarizer: Object.fromEntries(SUMMARIZER_FIELDS.map(field =>
       [field, sameText(draft.summarizer[field], previous.summarizer[field]) ? fresh.summarizer[field] : draft.summarizer[field]],
     )) as Record<SummarizerField, string>,

@@ -60,7 +60,7 @@ The settings page's Advanced section uses two extra endpoints for `.volatile()` 
 
 | Remote endpoint | Result | What to send or expect |
 |---|---|---|
-| `memoryCloud/getConfig()` | `ConfigView` | Returns `{config, defaults}` with current values and schema defaults. The live fields are `level`, `compactionMode`, `idleMinutes`, `idleCompactRatio`, `halfLifeDays`, `maxEpisodeTokens`, `captureReasoning`, `summarizer.{provider, model, reasoningEffort}`, `overrides`, `scopeRules` and `unmatchedSessions`. |
+| `memoryCloud/getConfig()` | `ConfigView` | Returns `{config, defaults}` with current values and schema defaults. The live fields are `level`, `compactionMode`, `timeAwareness`, `idleMinutes`, `idleCompactRatio`, `halfLifeDays`, `maxEpisodeTokens`, `captureReasoning`, `summarizer.{provider, model, reasoningEffort}`, `overrides`, `scopeRules` and `unmatchedSessions`. |
 | `memoryCloud/setConfig(patch)` | `SettingWriteResult` | Send the fields you want to change in `patch` (`ConfigPatch`). Within `summarizer`, send just the changed fields. Supplying `overrides` or `scopeRules` replaces that whole value. Leave an override out of its replacement and that field goes back to the level's own value. |
 
 `setConfig` checks the entire patch before writing. It returns `{ok: false, message}` if any of the following checks fail.

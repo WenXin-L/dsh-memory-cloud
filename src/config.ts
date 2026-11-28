@@ -51,6 +51,10 @@ export const Config = z.object({
     'In auto, Memory Cloud uses engine mode when it owns compaction and detects no other known compaction plugin. Otherwise it uses assist mode. Each session checks the saved mode on its next use.',
     'auto 在记忆云已接管压缩、也未检测到其他已知压缩插件时选择引擎模式，其余情况选择辅助模式。保存后从下一次模式判断起生效。',
   )),
+  timeAwareness: z.boolean().default(false).volatile().extra('description', description(
+    'Prefix conversation messages in subsequent model requests with their original event time in China Standard Time (CST). Messages without a timestamp may be sent without a prefix.',
+    '开启后，后续请求会在发给模型的会话消息开头加上原始事件时间，按中国标准时间（CST）显示。缺少时间戳的消息可能省略前缀。',
+  )),
   storageRoot: z.string().extra('description', description(
     'Local directory for memory files. Leave empty for $DSH_HOME/memory-cloud. Changing this path requires a restart.',
     '存放记忆文件的本地目录。留空使用 $DSH_HOME/memory-cloud。修改路径后需重启。',

@@ -83,6 +83,19 @@ describe('draft', () => {
     })
   })
 
+  it('stages and rebases the time-awareness toggle, including a reset to the default', () => {
+    const enabled = { ...base, timeAwareness: true }
+    const localToggle = { ...draftOf(base), timeAwareness: true }
+    expect(readDraft(localToggle, base, tEn)).toEqual({ errors: {}, changed: true, patch: { timeAwareness: true } })
+    expect(readDraft(draftOf(volatileConfig()), enabled, tEn).patch.timeAwareness).toBe(false)
+    expect(readDraft(draftOf(enabled), enabled, tEn).changed).toBe(false)
+
+    const reloaded = { ...base, idleMinutes: 45 }
+    expect(readDraft(rebaseDraft(localToggle, base, reloaded), reloaded, tEn).patch).toEqual({ timeAwareness: true })
+    expect(rebaseDraft(draftOf(base), base, enabled).timeAwareness).toBe(true)
+    expect(readDraft(rebaseDraft(localToggle, base, enabled), enabled, tEn).changed).toBe(false)
+  })
+
   it('round-trips and patches the unmatched-session setting', () => {
     const draft = draftOf(base)
     expect(draft.unmatchedSessions).toBe('auto')

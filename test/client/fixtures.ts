@@ -51,6 +51,7 @@ export function volatileConfig(overrides: Partial<VolatileConfig> = {}): Volatil
   return {
     level: 3,
     compactionMode: 'auto',
+    timeAwareness: false,
     idleMinutes: 30,
     idleCompactRatio: 0.5,
     halfLifeDays: 14,

@@ -117,6 +117,7 @@ export function readVolatileConfig(config: Config): VolatileConfig {
   return {
     level: config.level.get(),
     compactionMode: config.compactionMode.get(),
+    timeAwareness: config.timeAwareness.get(),
     idleMinutes: config.idleMinutes.get(),
     idleCompactRatio: config.idleCompactRatio.get(),
     halfLifeDays: config.halfLifeDays.get(),

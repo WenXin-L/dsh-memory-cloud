@@ -56,7 +56,7 @@ DSH 没给出模型窗口，或模型信息查询失败时，记忆云按 32 768
 
 | Remote 专有接口 | 返回值与写入方式 |
 | --- | --- |
-| `memoryCloud/getConfig()` | 返回 `ConfigView`，其中 `config` 是当前值，`defaults` 是 schema 默认值。可热更新的字段有 `level`、`compactionMode`、`idleMinutes`、`idleCompactRatio`、`halfLifeDays`、`maxEpisodeTokens`、`captureReasoning`、`summarizer.{provider,model,reasoningEffort}`、`overrides`、`scopeRules` 和 `unmatchedSessions`。 |
+| `memoryCloud/getConfig()` | 返回 `ConfigView`，其中 `config` 是当前值，`defaults` 是 schema 默认值。可热更新的字段有 `level`、`compactionMode`、`timeAwareness`、`idleMinutes`、`idleCompactRatio`、`halfLifeDays`、`maxEpisodeTokens`、`captureReasoning`、`summarizer.{provider,model,reasoningEffort}`、`overrides`、`scopeRules` 和 `unmatchedSessions`。 |
 | `memoryCloud/setConfig(patch)` | 返回 `SettingWriteResult`。只传要改的字段，`summarizer` 可只传改动的子项。传入 `overrides` 或 `scopeRules` 会替换整个字段。从替换值中去掉某个覆盖项，该项就回到档位值。 |
 
 写入前会验证整份补丁。字段须支持热更新，合并后的值须符合 schema。作用域规则中的匹配式和作用域均需非空，模板里的 `$n` 要有对应通配符。验证失败返回 `{ok: false, message}`。`storageRoot` 属于启动项。支持 `settings.mutate()` 时，对象值按路径替换，以便真正去掉不再需要的覆盖项。其余情况走 `settings.update()`，或由配置编辑器在当前完整行配置上修改指定路径。保存后的作用域由注入和回忆在每步检查，捕获在下一轮开始时检查。[Remote 实现](../src/runtime/remote.ts) · [参数和编解码](../src/client/contract.ts)
