@@ -8,7 +8,7 @@
 
 新会话开始时和上下文压缩后，`<memory-cloud>` 记忆块会把相处档案、远期总结和近期摘要带回上下文。选择**接管压缩**后，记忆块本身就是 DSH 的压缩检查点，被替换的区间同时封存为一个片段。五个**压缩档位**随时可切换，修改立即生效。
 
-> 源码版本为 `0.1.0`（预览），尚未发布到 npm。DSH 也在开发者预览阶段。端到端测试在 DSH `0.2.2-rc.5` 上运行，使用假模型。[更新日志](../CHANGELOG.md) · [局限与尚未验证的部分](#局限与尚未验证的部分)
+> `0.2.3` 是开发者预览版。端到端测试在 DSH `0.2.2-rc.5` 上运行，使用假模型。[下载安装包](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.2.3) · [更新日志](../CHANGELOG.md) · [局限与尚未验证的部分](#局限与尚未验证的部分)
 
 ## 目录
 
@@ -156,13 +156,13 @@ $$
 
 ### Web / headless profile（CLI）
 
-包名已经准备好了，npm 上的包还没有。**等发布后**才可以按包名安装。
+从发布页下载 `dsh-memory-cloud-brain-0.2.3.tgz`，在下载目录运行下面的命令。重启 DSH 后，在 **Plugins** 检查记忆云已启用。[GitHub Release](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.2.3)
 
 ```sh
-dsh plugin --profile web add dsh-memory-cloud-brain
+dsh plugin --profile web add ./dsh-memory-cloud-brain-0.2.3.tgz
 ```
 
-现在可直接从 GitHub 安装。这条安装路径尚未经端到端测试。
+也可直接从 GitHub 源码安装。这条路径尚未经端到端测试。
 
 ```sh
 dsh plugin --profile web add github:WenXin-L/dsh-memory-cloud
@@ -180,18 +180,18 @@ pnpm build
 dsh plugin --profile web add "$PWD"
 ```
 
-也可以自己打 tarball 再安装。这条路径同样尚未经端到端测试。
+要从当前源码生成自己的安装包，可以运行 `npm pack` 后再安装。
 
 ```sh
-npm pack                     # 生成 dsh-memory-cloud-brain-0.1.0.tgz
-dsh plugin --profile web add ./dsh-memory-cloud-brain-0.1.0.tgz
+npm pack                     # 生成 dsh-memory-cloud-brain-0.2.3.tgz
+dsh plugin --profile web add ./dsh-memory-cloud-brain-0.2.3.tgz
 ```
 
 headless 和 SDK 宿主使用同样的安装方式，把 `--profile web` 替换为宿主使用的 profile，例如 `--profile headless`。安装后的引擎切换见 [headless / SDK](#headless--sdk)。
 
 ### Desktop
 
-打开 **Plugins → Add plugin**，输入 `github:WenXin-L/dsh-memory-cloud` 或 tarball 的绝对路径，然后启用插件。发布后也可以输入包名 `dsh-memory-cloud-brain`。Desktop 自行管理 profile，本插件尚未在 Desktop 实机验证。
+打开 **Plugins → Add plugin**，输入下载包的绝对路径或 `github:WenXin-L/dsh-memory-cloud`，然后启用插件。Desktop 自行管理 profile，本插件尚未在 Desktop 实机验证。
 
 ### 重启说明
 
@@ -251,9 +251,9 @@ headless 没有输入斜杠命令的界面。请按宿主提供的入口操作�
 
 ### 设置页
 
-在 **Plugins** 中打开记忆云。要知道眼前这个会话究竟在用什么，先看**记忆云状态**。这里显示生效模式、实际预算、防火墙对未匹配会话的处理、各作用域的片段统计、后台任务、接管状态、共存提示、最近一次回退和存储位置。
+从侧边栏打开**记忆云**，也可从**设置**或**插件**卡片进入。**状态**页先显示生效模式和档位，下方可以查看会话预算、片段、后台任务、接管、隔离和存储等详情。
 
-**压缩档位**决定记忆能用多少空间，**压缩模式**决定由谁整理上下文。**接管压缩**和**还原**变更引擎配置。其余实时设置在**高级设置**里，第一次展开时才读取。
+在**压缩**页，模式决定谁整理上下文，档位决定记忆能用多少空间。展开**比较各档预算**可查看其他档位的数值。**接管压缩**和**还原**会变更引擎配置。**高级**页首次打开时读取表单，切换记忆云分页会留住未保存的草稿。
 
 | 在高级设置中要改什么 | 对应字段及效果 |
 |---|---|

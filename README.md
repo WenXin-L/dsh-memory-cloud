@@ -4,21 +4,19 @@
 
 **正在为新会话准备上一次。能放得下的那部分。** 记忆云把 DeepSeek Harness（DSH）的对话分段存在本机。新会话从同一作用域接过近期的摘要，再早一些的事只带简短的总结。需要核对当时的说法，模型可以回去读原文。你也可以让记忆云接管上下文压缩，这一步可以留到以后。
 
-> `0.1.0` 源码预览已经到这里了。它还没有发布到 npm。端到端记录来自 DSH `0.2.2-rc.5`、本地链接安装和一个假模型。Desktop、真实模型的缓存以及其他安装方式仍待验证。
+> `0.2.3` 开发者预览已提供安装包。端到端测试使用 DSH `0.2.2-rc.5`、本地链接和假模型。[下载 0.2.3](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.2.3)
 
 ## 安装
 
 先给试用找一个自己的家。用独立的测试 profile，或把 `DSH_HOME` 指到临时目录，拿测试会话试跑。准备好 [DSH](https://github.com/deepseek-ai/deepseek-harness) `0.2.2-rc.5`、Node.js `24.9` 或更新版本，并把 `pnpm` 放在 PATH 中。
 
+从发布页下载 `dsh-memory-cloud-brain-0.2.3.tgz`，在下载目录运行下面的命令。
+
 ```sh
-git clone https://github.com/WenXin-L/dsh-memory-cloud.git
-cd dsh-memory-cloud
-pnpm install --frozen-lockfile --ignore-scripts
-pnpm build
-dsh plugin --profile web add "$PWD"
+dsh plugin --profile web add ./dsh-memory-cloud-brain-0.2.3.tgz
 ```
 
-插件还没出现在列表里时，重启 DSH，让列表赶上来。在**新会话**里运行 `/memory status`，确认插件已加载，并查看当前模式和作用域。第一次可以让 `auto` 留在原位。按上面步骤新装到 Web 时，生效的是**辅助模式**。记忆云补入记忆，压缩仍由 DSH 负责。
+重启 DSH，在 **Plugins** 确认记忆云已启用。在**新会话**里运行 `/memory status`，核对模式和作用域。默认配置使用**辅助模式**，由 DSH 压缩上下文，记忆云负责补入记忆。[从源码安装](docs/reference.md#web--headless-profilecli)
 
 ## 日常使用
 

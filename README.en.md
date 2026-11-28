@@ -4,21 +4,19 @@
 
 **Getting your previous conversation ready for a new session. The part that fits, anyway.** Memory Cloud archives DeepSeek Harness (DSH) conversations on this machine, one episode at a time. A new session picks up summaries of recent episodes and shorter gists of older ones from the same scope. For the exact wording, the model can look up the original. You can hand context compaction to Memory Cloud as a separate step whenever you need it.
 
-> Source preview `0.1.0` has made it to this repository. It has yet to make it to npm. The recorded end-to-end runs used DSH `0.2.2-rc.5`, a local link and a fake model. Desktop, caching with a real model and the other installation methods still await verification.
+> The `0.2.3` developer preview is available as an installable package. The end-to-end tests used DSH `0.2.2-rc.5`, a local link and a fake model. [Download 0.2.3](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.2.3)
 
 ## Install
 
 Give the trial a home of its own. Use a separate test profile or point `DSH_HOME` at a temporary directory, and start with test conversations. You'll need [DSH](https://github.com/deepseek-ai/deepseek-harness) `0.2.2-rc.5`, Node.js `24.9` or later, and `pnpm` on your PATH.
 
+Download `dsh-memory-cloud-brain-0.2.3.tgz` from the release and run the command from your downloads directory.
+
 ```sh
-git clone https://github.com/WenXin-L/dsh-memory-cloud.git
-cd dsh-memory-cloud
-pnpm install --frozen-lockfile --ignore-scripts
-pnpm build
-dsh plugin --profile web add "$PWD"
+dsh plugin --profile web add ./dsh-memory-cloud-brain-0.2.3.tgz
 ```
 
-If the plugin list hasn't caught up, restart DSH. Run `/memory status` in a **new session** to confirm that the plugin loaded and check its mode and scope. Leave `auto` in place for a first run. A fresh Web install with the commands above uses **assist mode**. Memory Cloud supplies the memories, and DSH keeps its compaction job.
+Restart DSH and check that Memory Cloud is enabled under **Plugins**. In a **new session**, run `/memory status` to check its mode and scope. A default Web install uses **assist mode**. DSH compacts the context, and Memory Cloud supplies the memories. [Install from source](docs/reference.en.md#web--headless-profiles-cli)
 
 ## Everyday use
 

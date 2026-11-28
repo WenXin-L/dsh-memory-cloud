@@ -8,7 +8,7 @@ Memory Cloud appends the session events it captures to local files. It never rew
 
 At session start and after compaction, a `<memory-cloud>` block brings the profile, distant gists and recent summaries into context. Choose **Take over compaction** and the block itself becomes the DSH checkpoint. The replaced span is sealed as an episode at the same time. You can switch among five **compression levels**. Changes apply immediately.
 
-> The source is at `0.1.0` (preview). The package has yet to ship on npm, and DSH is a developer preview. End-to-end testing used DSH `0.2.2-rc.5` with a fake model. [Changelog (Chinese)](../CHANGELOG.md) · [Limitations and what is not verified](#limitations-and-what-is-not-verified)
+> `0.2.3` is a developer preview. End-to-end testing used DSH `0.2.2-rc.5` with a fake model. [Download the package](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.2.3) · [Changelog (Chinese)](../CHANGELOG.md) · [Limitations and what is not verified](#limitations-and-what-is-not-verified)
 
 ## Contents
 
@@ -156,13 +156,13 @@ You'll need Node.js ≥ 24.9, DSH `>=0.2.2-rc.5 <0.3.0-0`, and `pnpm` on `PATH` 
 
 ### Web / headless profiles (CLI)
 
-The package name is ready. The npm package is still to come. **After publication**, you can install it by name.
+Download `dsh-memory-cloud-brain-0.2.3.tgz` and run the command from your downloads directory. Restart DSH and check that Memory Cloud is enabled under **Plugins**. [GitHub Release](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.2.3)
 
 ```sh
-dsh plugin --profile web add dsh-memory-cloud-brain
+dsh plugin --profile web add ./dsh-memory-cloud-brain-0.2.3.tgz
 ```
 
-For now you can install directly from GitHub. This route has yet to be tested end to end.
+You can also install from the GitHub source. This route has yet to be tested end to end.
 
 ```sh
 dsh plugin --profile web add github:WenXin-L/dsh-memory-cloud
@@ -180,18 +180,18 @@ pnpm build
 dsh plugin --profile web add "$PWD"
 ```
 
-You can also pack and install a tarball. This route has yet to be tested end to end.
+To build your own package from the current source, run `npm pack` before installing it.
 
 ```sh
-npm pack                     # writes dsh-memory-cloud-brain-0.1.0.tgz
-dsh plugin --profile web add ./dsh-memory-cloud-brain-0.1.0.tgz
+npm pack                     # writes dsh-memory-cloud-brain-0.2.3.tgz
+dsh plugin --profile web add ./dsh-memory-cloud-brain-0.2.3.tgz
 ```
 
 For headless and SDK hosts, replace `--profile web` with the host's profile, for example `--profile headless`. To select its engine after installation, see [Headless / SDK](#headless--sdk).
 
 ### Desktop
 
-Open **Plugins → Add plugin**, enter `github:WenXin-L/dsh-memory-cloud` or the absolute path to a tarball, then enable the plugin. After publication you can also enter `dsh-memory-cloud-brain`. Desktop manages its own profile. This plugin has yet to be tested on Desktop.
+Open **Plugins → Add plugin**, enter the absolute path to the downloaded package or `github:WenXin-L/dsh-memory-cloud`, then enable the plugin. Desktop manages its own profile. This plugin has yet to be tested on Desktop.
 
 ### Restart notes
 
@@ -251,9 +251,9 @@ The engine row accepts every `compaction-basic` option and adds `composeTimeoutM
 
 ### Settings page
 
-Open Memory Cloud under **Plugins**. To see what this particular session actually got, start with **Memory cloud status**. It shows the effective mode and resolved budget, the firewall decision for unmatched sessions, episode counts per scope, background jobs, takeover, coexistence notices, the last engine fallback and the storage location.
+Open **Memory Cloud** from the sidebar, **Settings**, or its **Plugins** card. **Status** shows the effective mode and level first, followed by session budget, episode counts, background jobs, takeover, isolation and storage details.
 
-**Compression level** allocates space for memory. **Compaction mode** selects who compacts the context. **Take over compaction** and **Restore** change the engine configuration. The other live settings are under **Advanced**, which loads the first time you expand it.
+Under **Compaction**, mode selects who compacts the context and level allocates space for memory. Open **Compare level budgets** to see the other levels' values. **Take over compaction** and **Restore** change the engine configuration. **Advanced** loads the form on its first visit and keeps the draft when you switch between Memory Cloud tabs.
 
 | What to change under Advanced | Fields and effects |
 |---|---|

@@ -138,7 +138,7 @@ describe('status facts', () => {
   it('renders every section for a live session', () => {
     const facts = statusFacts(wireStatus({ agent: agentReport() }), tEn, 'en')
     expect(facts.map(item => item.key)).toEqual(['mode', 'level', 'budget', 'episodes', 'jobs', 'takeover', 'firewall', 'coexistence', 'registrations', 'storage'])
-    expect(fact(facts, 'mode').tag).toEqual({ text: 'Assist · assist', tone: 'info' })
+    expect(fact(facts, 'mode').tag).toEqual({ text: 'Assist', tone: 'info' })
     expect(texts(fact(facts, 'level'))[0]).toBe('Level 3 — Balanced (default)')
     expect(texts(fact(facts, 'budget'))).toEqual([
       'deepseek/deepseek-chat · window 128K · output reserve 8K',

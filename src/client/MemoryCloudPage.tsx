@@ -1,18 +1,21 @@
-import { useEffect, useId } from 'react'
-import type { ReactNode } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
+import type { KeyboardEvent, ReactNode } from 'react'
 import type { CompactionMode, CompressionLevel } from '../contracts.ts'
+import type { MemoryCloudStatus } from '../runtime/status.ts'
 import { AdvancedSettings } from './AdvancedSettings.tsx'
+import { CompactionSettings } from './CompactionSettings.tsx'
 import type { ConfigSnapshot } from './config-store.ts'
 import type { ConfigPatch } from './contract.ts'
 import type { LocaleSnapshot } from './host.ts'
-import type { StatusAction, StatusSnapshot } from './store.ts'
+import type { StatusSnapshot } from './store.ts'
 import { STYLES } from './styles.ts'
-import { languageOf, levelTable, modeOptions, noticeView, statusFacts, takeoverControls } from './view-model.ts'
-import type { Fact, Translate } from './view-model.ts'
+import { languageOf, statusFacts } from './view-model.ts'
+import type { Fact, Language, Translate } from './view-model.ts'
 
-/** Props of the `plugins.bundle.config` entry: owner `view`, the locale `t` seat, bound hooks, and store actions. */
 export interface MemoryCloudPageProps {
-  readonly view: 'summary' | 'page'
+  /** Only the plugin card supplies a view. */
+  readonly view?: 'summary' | 'page'
+  readonly surface?: 'panel'
   readonly t: Translate
   readonly useStatus: <S>(selector: (snapshot: StatusSnapshot) => S) => S
   readonly useLocale: <S>(selector: (snapshot: LocaleSnapshot) => S) => S
@@ -26,9 +29,20 @@ export interface MemoryCloudPageProps {
   readonly setMode: (mode: CompactionMode) => void
 }
 
-function FactList({ facts }: { readonly facts: readonly Fact[] }): ReactNode {
+const TABS = [
+  { id: 'status', label: 'tabStatus' },
+  { id: 'compaction', label: 'tabCompaction' },
+  { id: 'advanced', label: 'tabAdvanced' },
+] as const
+
+type Tab = typeof TABS[number]['id']
+
+const OVERVIEW_FACTS = new Set(['mode', 'level'])
+const MEMORY_FACTS = new Set(['budget', 'firewall', 'episodes', 'storage'])
+
+function FactList({ facts, overview }: { readonly facts: readonly Fact[]; readonly overview?: true }): ReactNode {
   return (
-    <dl className="mcb-facts">
+    <dl className={overview ? 'mcb-facts mcb-overview' : 'mcb-facts'}>
       {facts.map(fact => (
         <div key={fact.key} className="mcb-fact" data-fact={fact.key}>
           <dt>{fact.label}</dt>
@@ -44,140 +58,121 @@ function FactList({ facts }: { readonly facts: readonly Fact[] }): ReactNode {
   )
 }
 
-function Notice({ snapshot, actions, t }: { readonly snapshot: StatusSnapshot; readonly actions: readonly StatusAction[]; readonly t: Translate }): ReactNode {
-  const notice = snapshot.notice
-  if (notice === undefined || !actions.includes(notice.action)) return null
-  const view = noticeView(notice, t)
-  return <p className="mcb-notice" data-tone={view.tone} role="status">{view.lines.join('\n')}</p>
-}
-
-function Option({ checked, disabled, title, detail, current, onSelect }: {
-  readonly checked: boolean
-  readonly disabled: boolean
-  readonly title: string
-  readonly detail: string
-  readonly current: string
-  readonly onSelect: () => void
+function StatusOverview({ status, language, t }: {
+  readonly status: MemoryCloudStatus
+  readonly language: Language
+  readonly t: Translate
 }): ReactNode {
+  const facts = statusFacts(status, t, language)
   return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={checked}
-      className="mcb-option"
-      disabled={disabled}
-      onClick={() => { if (!checked) onSelect() }}
-    >
-      <span className="mcb-option-head">
-        {title}
-        {checked ? <span className="mcb-option-current">{current}</span> : null}
-      </span>
-      <span className="mcb-option-detail">{detail}</span>
-    </button>
+    <section className="mcb-status" data-section="status" aria-label={t('statusTitle')}>
+      <FactList facts={facts.filter(fact => OVERVIEW_FACTS.has(fact.key))} overview />
+      <div className="mcb-status-details">
+        <section className="mcb-detail-group">
+          <h3 className="mcb-title">{t('statusMemoryTitle')}</h3>
+          <FactList facts={facts.filter(fact => MEMORY_FACTS.has(fact.key))} />
+        </section>
+        <section className="mcb-detail-group">
+          <h3 className="mcb-title">{t('statusRuntimeTitle')}</h3>
+          <FactList facts={facts.filter(fact => !MEMORY_FACTS.has(fact.key) && !OVERVIEW_FACTS.has(fact.key))} />
+        </section>
+      </div>
+    </section>
   )
 }
 
-/** The bundle's page on the Plugins page: status, level and mode controls, the compaction takeover, and the advanced settings. */
+/** The same console fits the sidebar panel, the Settings dialog, and the plugin card. */
 export function MemoryCloudPage(props: MemoryCloudPageProps): ReactNode {
-  const { t, reload } = props
+  const { t, reload, view } = props
   const snapshot = props.useStatus(value => value)
   const language = languageOf(props.useLocale(value => value.active))
-  const modeHintId = useId()
-  useEffect(() => { reload() }, [reload])
-  if (props.view !== 'page') return null
+  const instanceId = useId()
+  const surface = useRef<HTMLDivElement>(null)
+  const [tab, setTab] = useState<Tab>('status')
+  useEffect(() => { if (view !== 'summary') reload() }, [reload, view])
+  if (view === 'summary') return null
 
   const { status, pending, failure } = snapshot
-  const locked = pending !== undefined || status === undefined
-  const controls = status === undefined ? undefined : takeoverControls(status.takeover)
+  const isPanel = props.surface === 'panel'
+  const tabId = (item: Tab) => `${instanceId}-tab-${item}`
+  const panelId = (item: Tab) => `${instanceId}-panel-${item}`
+  const selectTab = (next: Tab): void => {
+    if (next === tab) return
+    setTab(next)
+    if (isPanel && surface.current !== null) surface.current.scrollTop = 0
+  }
+  const moveTab = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+    const index = TABS.findIndex(item => item.id === tab)
+    const last = TABS.length - 1
+    let next: number
+    switch (event.key) {
+      case 'ArrowLeft': next = index === 0 ? last : index - 1; break
+      case 'ArrowRight': next = index === last ? 0 : index + 1; break
+      case 'Home': next = 0; break
+      case 'End': next = last; break
+      default: return
+    }
+    const item = TABS[next]
+    if (item === undefined) return
+    event.preventDefault()
+    selectTab(item.id)
+    event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus()
+  }
+
   return (
-    <div className="mcb-page" data-memory-cloud-settings="">
+    <div ref={surface} className="mcb-surface" data-surface={isPanel ? 'panel' : 'embedded'} data-memory-cloud-settings="">
       <style>{STYLES}</style>
-      <section className="mcb-section" data-section="status">
-        <div className="mcb-head">
-          <h4 className="mcb-title">{t('statusTitle')}</h4>
-          <button type="button" className="mcb-button" title={t('refreshHint')} disabled={snapshot.refreshing || pending !== undefined} onClick={reload}>
-            {snapshot.refreshing ? t('refreshing') : t('refresh')}
-          </button>
+      <div className="mcb-frame">
+        <header className="mcb-header">
+          {isPanel ? <h2 className="mcb-heading">{t('settingsNav')}</h2> : null}
+          <div className="mcb-toolbar">
+            <div className="mcb-tabs" role="tablist" aria-label={t('tabsLabel')} onKeyDown={moveTab}>
+              {TABS.map(item => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="tab"
+                  id={tabId(item.id)}
+                  aria-selected={tab === item.id}
+                  aria-controls={panelId(item.id)}
+                  data-tab={item.id}
+                  tabIndex={tab === item.id ? 0 : -1}
+                  className="mcb-tab"
+                  onClick={() => { selectTab(item.id) }}
+                >
+                  {t(item.label)}
+                </button>
+              ))}
+            </div>
+            <button type="button" className="mcb-button mcb-refresh" title={t('refreshHint')} disabled={snapshot.refreshing || pending !== undefined} onClick={reload}>
+              {snapshot.refreshing ? t('refreshing') : t('refresh')}
+            </button>
+          </div>
+        </header>
+        {failure === undefined ? null : (
+          <p className="mcb-notice mcb-status-error" data-tone="error" role="status">{t('loadFailed', { code: failure.code, message: failure.message })}</p>
+        )}
+        <div className="mcb-panel" role="tabpanel" id={panelId('status')} aria-labelledby={tabId('status')} tabIndex={0} hidden={tab !== 'status'}>
+          {status === undefined
+            ? (failure === undefined ? <p className="mcb-hint" role="status">{t('loading')}</p> : null)
+            : <StatusOverview status={status} language={language} t={t} />}
         </div>
-        {failure === undefined ? null : <p className="mcb-notice" data-tone="error" role="status">{t('loadFailed', { code: failure.code, message: failure.message })}</p>}
-        {status === undefined
-          ? (failure === undefined ? <p className="mcb-hint" role="status">{t('loading')}</p> : null)
-          : <FactList facts={statusFacts(status, t, language)} />}
-      </section>
-
-      <section className="mcb-section" data-section="level">
-        <h4 className="mcb-title">{t('levelTitle')}</h4>
-        <div className="mcb-options" role="radiogroup" aria-label={t('levelTitle')}>
-          {levelTable(t).map(row => (
-            <Option
-              key={row.level}
-              checked={row.level === status?.configured.level}
-              disabled={locked}
-              title={t('levelValue', { level: row.level, title: row.title })}
-              detail={row.detail}
-              current={t('current')}
-              onSelect={() => { props.setLevel(row.level) }}
-            />
-          ))}
+        <div className="mcb-panel" role="tabpanel" id={panelId('compaction')} aria-labelledby={tabId('compaction')} tabIndex={0} hidden={tab !== 'compaction'}>
+          <CompactionSettings snapshot={snapshot} t={t} setLevel={props.setLevel} setMode={props.setMode} takeover={props.takeover} restore={props.restore} />
         </div>
-        <p className="mcb-hint">{t('levelHint')}</p>
-        <Notice snapshot={snapshot} actions={['level']} t={t} />
-      </section>
-
-      <section className="mcb-section" data-section="mode">
-        <h4 className="mcb-title">{t('modeTitle')}</h4>
-        <div className="mcb-options" role="radiogroup" aria-label={t('modeTitle')} aria-describedby={modeHintId}>
-          {modeOptions(t).map(option => (
-            <Option
-              key={option.mode}
-              checked={option.mode === status?.configured.compactionMode}
-              disabled={locked}
-              title={`${option.label} · ${option.mode}`}
-              detail={option.hint}
-              current={t('current')}
-              onSelect={() => { props.setMode(option.mode) }}
-            />
-          ))}
+        <div className="mcb-panel" role="tabpanel" id={panelId('advanced')} aria-labelledby={tabId('advanced')} tabIndex={0} hidden={tab !== 'advanced'}>
+          <AdvancedSettings
+            t={t}
+            useConfig={props.useConfig}
+            loadConfig={props.loadConfig}
+            saveConfig={props.saveConfig}
+            level={status?.configured.level}
+            budget={status?.agent?.budget}
+            active={tab === 'advanced'}
+          />
         </div>
-        <p className="mcb-hint" id={modeHintId}>{t('modeSaveHint')}</p>
-        <Notice snapshot={snapshot} actions={['mode']} t={t} />
-      </section>
-
-      <section className="mcb-section" data-section="takeover">
-        <h4 className="mcb-title">{t('takeoverTitle')}</h4>
-        <p className="mcb-text">{t(controls === undefined ? 'takeoverAwaitStatus' : controls.kind === 'host' ? 'takeoverHostExplain' : 'takeoverExplain')}</p>
-        <div className="mcb-actions">
-          <button
-            type="button"
-            className="mcb-button"
-            data-primary=""
-            data-action="takeover"
-            disabled={locked || controls?.canTakeOver !== true}
-            onClick={props.takeover}
-          >
-            {pending === 'takeover' ? t('working') : t('takeoverAction')}
-          </button>
-          <button
-            type="button"
-            className="mcb-button"
-            data-action="restore"
-            disabled={locked || controls?.canRestore !== true}
-            onClick={props.restore}
-          >
-            {pending === 'restore' ? t('restoring') : t('restoreAction')}
-          </button>
-        </div>
-        <Notice snapshot={snapshot} actions={['takeover', 'restore']} t={t} />
-      </section>
-
-      <AdvancedSettings
-        t={t}
-        useConfig={props.useConfig}
-        loadConfig={props.loadConfig}
-        saveConfig={props.saveConfig}
-        level={status?.configured.level}
-        budget={status?.agent?.budget}
-      />
+      </div>
     </div>
   )
 }

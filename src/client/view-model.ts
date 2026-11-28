@@ -274,12 +274,13 @@ function firewallFact(firewall: UnmatchedDecision, t: Translate): Fact {
 /** The status table, row by row; `language` selects the host's bilingual coexistence warnings. */
 export function statusFacts(status: MemoryCloudStatus, t: Translate, language: Language): readonly Fact[] {
   const mode = modeView(status, t)
+  const label = modeLabel(mode.mode, t)
   const level = status.agent?.budget.level ?? status.configured.level
   const facts: Fact[] = [
     {
       key: 'mode',
       label: t('rowMode'),
-      tag: { text: `${modeLabel(mode.mode, t)} · ${mode.mode}`, tone: MODE_TONES[mode.mode] },
+      tag: { text: label.toLowerCase() === mode.mode ? label : `${label} · ${mode.mode}`, tone: MODE_TONES[mode.mode] },
       lines: [{ text: mode.reason }, { text: mode.context, muted: true }],
     },
     {
