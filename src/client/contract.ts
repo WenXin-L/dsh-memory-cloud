@@ -37,6 +37,7 @@ export type OverrideField = (typeof OVERRIDE_FIELDS)[number]
 export interface VolatileConfig {
   readonly level: CompressionLevel
   readonly compactionMode: CompactionMode
+  readonly timeAwareness: boolean
   readonly idleMinutes: number
   readonly idleCompactRatio: number
   readonly halfLifeDays: number
@@ -141,6 +142,9 @@ export function parseConfigPatch(value: unknown): ConfigPatch {
       case 'compactionMode':
         parseMode(field)
         break
+      case 'timeAwareness':
+        if (typeof field !== 'boolean') throw new TypeError('时间感知需要填写 true 或 false。 / timeAwareness must be a boolean')
+        break
       case 'idleMinutes':
       case 'idleCompactRatio':
       case 'halfLifeDays':
@@ -183,6 +187,7 @@ const PATCH_JSON_SCHEMA = {
   properties: {
     level: { type: 'integer', enum: [...COMPRESSION_LEVELS] },
     compactionMode: { type: 'string', enum: [...COMPACTION_MODES] },
+    timeAwareness: { type: 'boolean' },
     ...Object.fromEntries(NUMBER_FIELDS.map(field => [field, { type: 'number' }])),
     captureReasoning: { type: 'boolean' },
     summarizer: {

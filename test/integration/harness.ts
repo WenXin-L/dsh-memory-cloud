@@ -126,7 +126,7 @@ export interface Harness {
   readonly runtime: MemoryCloudRuntime
   readonly compaction?: BasicCompactionEngine
   conversation(id: string, meta?: CreateSessionOptions['meta']): Promise<Conversation>
-  setVolatile(path: 'level' | 'compactionMode', value: unknown): void
+  setVolatile(path: 'level' | 'compactionMode' | 'timeAwareness', value: unknown): void
   tool<T>(name: string, args: Record<string, unknown>, agent: Agent): Promise<T>
   command(agent: Agent, line: string): Promise<{ kind: string; text?: string }>
   preStep(agent: Agent, messages: readonly UserMessage[], turn?: number): Promise<PreStepDecision>
@@ -199,13 +199,13 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   ctx.provide('agents', { get: (id: string) => agents.get(id), list: () => [...agents.values()] })
 
   const config = Config({ storageRoot: root, level: options.level ?? 3, compactionMode: options.mode ?? 'auto' })
-  const setVolatile = (path: 'level' | 'compactionMode', value: unknown): void => {
+  const setVolatile: Harness['setVolatile'] = (path, value) => {
     ;(config[path] as unknown as Record<symbol, (value: unknown) => void>)[VOLATILE_WRITE]?.(value)
     ctx.emit('loader/volatile-update', [[path]] as never)
   }
   ctx.provide('settings', {
     async update(_ns: string, patch: Record<string, unknown>) {
-      for (const [key, value] of Object.entries(patch)) setVolatile(key as 'level' | 'compactionMode', value)
+      for (const [key, value] of Object.entries(patch)) setVolatile(key as Parameters<Harness['setVolatile']>[0], value)
     },
   })
 

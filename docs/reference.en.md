@@ -8,7 +8,7 @@ Memory Cloud appends the session events it captures to local files. It never rew
 
 At session start and after compaction, a `<memory-cloud>` block brings the profile, distant gists and recent summaries into context. Choose **Take over compaction** and the block itself becomes the DSH checkpoint. The replaced span is sealed as an episode at the same time. You can switch among five **compression levels**. Changes apply immediately.
 
-> `0.2.3` is a developer preview. End-to-end testing used DSH `0.2.2-rc.5` with a fake model. [Download the package](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.2.3) · [Changelog (Chinese)](../CHANGELOG.md) · [Limitations and what is not verified](#limitations-and-what-is-not-verified)
+> `0.3.0` is a developer preview. End-to-end testing used DSH `0.2.2-rc.5` with a fake model. [Download the package](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.3.0) · [Changelog (Chinese)](../CHANGELOG.md) · [Limitations and what is not verified](#limitations-and-what-is-not-verified)
 
 ## Contents
 
@@ -156,10 +156,10 @@ You'll need Node.js ≥ 24.9, DSH `>=0.2.2-rc.5 <0.3.0-0`, and `pnpm` on `PATH` 
 
 ### Web / headless profiles (CLI)
 
-Download `dsh-memory-cloud-brain-0.2.3.tgz` and run the command from your downloads directory. Restart DSH and check that Memory Cloud is enabled under **Plugins**. [GitHub Release](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.2.3)
+Download `dsh-memory-cloud-brain-0.3.0.tgz` and run the command from your downloads directory. Restart DSH and check that Memory Cloud is enabled under **Plugins**. [GitHub Release](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.3.0)
 
 ```sh
-dsh plugin --profile web add ./dsh-memory-cloud-brain-0.2.3.tgz
+dsh plugin --profile web add ./dsh-memory-cloud-brain-0.3.0.tgz
 ```
 
 You can also install from the GitHub source. This route has yet to be tested end to end.
@@ -183,8 +183,8 @@ dsh plugin --profile web add "$PWD"
 To build your own package from the current source, run `npm pack` before installing it.
 
 ```sh
-npm pack                     # writes dsh-memory-cloud-brain-0.2.3.tgz
-dsh plugin --profile web add ./dsh-memory-cloud-brain-0.2.3.tgz
+npm pack                     # writes dsh-memory-cloud-brain-0.3.0.tgz
+dsh plugin --profile web add ./dsh-memory-cloud-brain-0.3.0.tgz
 ```
 
 For headless and SDK hosts, replace `--profile web` with the host's profile, for example `--profile headless`. To select its engine after installation, see [Headless / SDK](#headless--sdk).
@@ -257,6 +257,7 @@ Under **Compaction**, mode selects who compacts the context and level allocates 
 
 | What to change under Advanced | Fields and effects |
 |---|---|
+| Time awareness | `timeAwareness` is off by default. Enable it to prefix conversation messages sent to the model with China Standard Time |
 | Background summarizer | `summarizer.provider`, `summarizer.model`, `summarizer.reasoningEffort` |
 | Capture and forgetting | `idleMinutes`, `idleCompactRatio`, `halfLifeDays`, `maxEpisodeTokens`, `captureReasoning` |
 | Individual level settings | An empty `overrides.*` field uses the level. Its placeholder shows the value resolved for the active session's model when known, or the preset ceiling otherwise. Typing that ceiling skips the cap from the level below and can give a larger result than leaving the field empty. [Compression levels](#compression-levels-default-3) |
@@ -265,6 +266,12 @@ Under **Compaction**, mode selects who compacts the context and level allocates 
 **Discard changes** resets unsaved edits in the form. **Restore defaults** fills the form with the shipped values and clears its scope rules. Choose **Save** to write those changes to the current profile. The browser checks numeric ranges and verifies that every `$n` refers to an available wildcard. The host checks the configuration schema before writing. If any check fails, the entire change stays unwritten.
 
 A successful save updates the current profile's `cordis.patch.yml` and applies live. The page contacts the host through DSH Typert Remote in SRC mode. If that connection is unavailable, use the `/memory` commands or edit the file by hand. `storageRoot` requires a manual edit and a DSH restart.
+
+### Time awareness
+
+Under **Memory Cloud → Advanced**, enable **Time awareness** and save. Starting with the next conversation request, the model sees prefixes like `[Sat 2026-11-28 02:32:11 CST]`. Each message uses the time recorded in its session, expressed in China Standard Time. A message keeps its original timestamp on retries and after resuming a session. A new compaction checkpoint gets its own recorded time.
+
+Time awareness covers system prompts, user messages, assistant replies and tool results in conversation requests, plus in-history tool updates on routes that support them. The prefix is generated at dispatch. The chat, raw archive and background summaries use their own content. A message with no valid timestamp or an assistant reply with an unrecognized replay format gets no prefix. This feature uses the DSH 0.2 adapter dispatch interface and was verified on DSH `0.2.2-rc.5`.
 
 ### Compression levels (default 3)
 
@@ -307,6 +314,7 @@ In assist mode the level governs only the block and recall limit. Levels 4–5 c
   config:
     level: 3
     compactionMode: auto
+    timeAwareness: false
     idleMinutes: 30
     overrides:
       memoryBudgetTokens: 16000
@@ -318,6 +326,7 @@ In assist mode the level governs only the block and recall limit. Levels 4–5 c
 |---|---|---|
 | `level` | `3` | Compression level from 1 to 5 |
 | `compactionMode` | `auto` | Accepts `auto`, `engine`, `assist` or `off` |
+| `timeAwareness` | `false` | Adds China Standard Time prefixes to conversation requests. Changes apply live |
 | `storageRoot` | Empty, meaning `$DSH_HOME/memory-cloud` | Storage root. Restart DSH after changing it |
 | `idleMinutes` | `30` | Minutes of inactivity before sealing the uncompacted tail. Minimum 1 minute |
 | `idleCompactRatio` | `0.5` | Context pressure above which an idle agent calls `compactNow()`. Enter a number from 0 to 1 |

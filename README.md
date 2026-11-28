@@ -4,16 +4,16 @@
 
 **正在为新会话准备上一次。能放得下的那部分。** 记忆云把 DeepSeek Harness（DSH）的对话分段存在本机。新会话从同一作用域接过近期的摘要，再早一些的事只带简短的总结。需要核对当时的说法，模型可以回去读原文。你也可以让记忆云接管上下文压缩，这一步可以留到以后。
 
-> `0.2.3` 开发者预览已提供安装包。端到端测试使用 DSH `0.2.2-rc.5`、本地链接和假模型。[下载 0.2.3](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.2.3)
+> `0.3.0` 开发者预览已提供安装包。端到端测试使用 DSH `0.2.2-rc.5` 和本地测试模型。[下载 0.3.0](https://github.com/WenXin-L/dsh-memory-cloud/releases/tag/v0.3.0)
 
 ## 安装
 
 先给试用找一个自己的家。用独立的测试 profile，或把 `DSH_HOME` 指到临时目录，拿测试会话试跑。准备好 [DSH](https://github.com/deepseek-ai/deepseek-harness) `0.2.2-rc.5`、Node.js `24.9` 或更新版本，并把 `pnpm` 放在 PATH 中。
 
-从发布页下载 `dsh-memory-cloud-brain-0.2.3.tgz`，在下载目录运行下面的命令。
+从发布页下载 `dsh-memory-cloud-brain-0.3.0.tgz`，在下载目录运行下面的命令。
 
 ```sh
-dsh plugin --profile web add ./dsh-memory-cloud-brain-0.2.3.tgz
+dsh plugin --profile web add ./dsh-memory-cloud-brain-0.3.0.tgz
 ```
 
 重启 DSH，在 **Plugins** 确认记忆云已启用。在**新会话**里运行 `/memory status`，核对模式和作用域。默认配置使用**辅助模式**，由 DSH 压缩上下文，记忆云负责补入记忆。[从源码安装](docs/reference.md#web--headless-profilecli)
@@ -27,6 +27,7 @@ dsh plugin --profile web add ./dsh-memory-cloud-brain-0.2.3.tgz
 | 把压缩交给记忆云 | 在设置页选「接管压缩」，或运行 `/memory takeover`。交还给原引擎时用 `/memory restore`。[接管与重启说明](docs/reference.md#启用引擎模式接管压缩) |
 | 让新会话也知道该用什么单位 | 在私有主人会话里说「记住，以后温度都用摄氏度」。日后想改，或想移除这条偏好，都可以告诉模型。 |
 | 让上线日期跟上它自己的更改 | 先说「记住，海棠项目 12 月 12 日上线」，再说「海棠上线改到 19 日，请更新记录」。在同一作用域开个新会话问海棠，插件会按主题取回更新后的日期。 |
+| 让模型知道每条消息是什么时候发的 | 打开「记忆云 → 高级」，开启「时间感知」并保存。默认关闭。[时间格式与适用范围](docs/reference.md#时间感知) |
 | 看看当时究竟怎么说的 | 模型可用 `memory_search` 查片段，再用 `memory_read` 读原文。归档从启用插件时开始，更早的会话没有补录。 |
 
 ## 装进日常环境前

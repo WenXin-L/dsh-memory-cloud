@@ -7,6 +7,7 @@ describe('Config', () => {
     const config = Config({})
     expect(config.level.get()).toBe(3)
     expect(config.compactionMode.get()).toBe('auto')
+    expect(config.timeAwareness.get()).toBe(false)
     expect(config.storageRoot).toBeUndefined()
     expect(config.idleMinutes.get()).toBe(30)
     expect(config.halfLifeDays.get()).toBe(14)

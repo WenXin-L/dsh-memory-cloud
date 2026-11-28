@@ -41,8 +41,8 @@ describe('createConfigWriter', () => {
   it('writes the settings namespace the row id names', async () => {
     const update = vi.fn(async () => {})
     const write = createConfigWriter({ rowId: rowIdOf({ options: { id: 'dsh-memory-cloud-brain' } }, 'x'), settings: () => ({ update }), configEditor: () => undefined })
-    await expect(write({ level: 5 })).resolves.toEqual({ ok: true, via: 'settings' })
-    expect(update).toHaveBeenCalledWith('dsh-memory-cloud-brain', { level: 5 })
+    await expect(write({ level: 5, timeAwareness: false })).resolves.toEqual({ ok: true, via: 'settings' })
+    expect(update).toHaveBeenCalledWith('dsh-memory-cloud-brain', { level: 5, timeAwareness: false })
   })
 
   it('edits the config-editor entry whose options id matches when settings is absent', async () => {
@@ -80,10 +80,11 @@ describe('createConfigWriter', () => {
     const edited: unknown[] = []
     const current = { storageRoot: '/data', level: 2, summarizer: { provider: 'deepseek', model: 'old' }, overrides: { retainTokens: 1, gistTokens: 2 } }
     const write = createConfigWriter({ rowId: 'dsh-memory-cloud-brain', settings: () => undefined, configEditor: () => editorFor(current, edited) })
-    await expect(write(configEdits({ summarizer: { model: 'new' }, overrides: { gistTokens: 9 } }))).resolves.toEqual({ ok: true, via: 'config-editor' })
+    await expect(write(configEdits({ timeAwareness: true, summarizer: { model: 'new' }, overrides: { gistTokens: 9 } }))).resolves.toEqual({ ok: true, via: 'config-editor' })
     expect(edited).toEqual([['dsh-memory-cloud-brain', {
       storageRoot: '/data',
       level: 2,
+      timeAwareness: true,
       summarizer: { provider: 'deepseek', model: 'new' },
       overrides: { gistTokens: 9 },
     }]])
@@ -129,6 +130,7 @@ describe('live settings', () => {
     expect(problem({ summarizer: { temperature: 1 } })).toBe('未识别此设置项，请核对字段名。 / unknown setting "summarizer.temperature"')
     expect(problem({ overrides: { thresholdRatio: 1 } })).toBe('未识别此设置项，请核对字段名。 / unknown setting "overrides.thresholdRatio"')
     expect(problem({ scopeRules: [{ match: 'a', scope: 'b', extra: 1 }] })).toBe('未识别此设置项，请核对字段名。 / unknown setting "scopeRules[0].extra"')
+    expect(problem({ timeAwareness: 'true' })).toMatch(/timeAwareness/)
     expect(problem({ idleCompactRatio: 1.5 })).toBe('$.idleCompactRatio expected number <= 1 but got 1.5')
     expect(problem({ halfLifeDays: 0.05 })).toBe('$.halfLifeDays expected number >= 0.1 but got 0.05')
     expect(problem({ overrides: { gistTokens: 2.5 } })).toBe('$.overrides.gistTokens expected number multiple of 1 but got 2.5')

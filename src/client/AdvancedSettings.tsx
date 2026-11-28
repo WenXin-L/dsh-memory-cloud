@@ -96,6 +96,7 @@ function RuleButton({ t, index, action, disabled, onClick, children }: {
 export function AdvancedSettings({ t, useConfig, loadConfig, saveConfig, level, budget, active }: AdvancedSettingsProps): ReactNode {
   const snapshot = useConfig(value => value)
   const [form, setForm] = useState<Form | undefined>(undefined)
+  const timeAwarenessHintId = useId()
   const unmatchedId = useId()
   const view = snapshot.view
 
@@ -132,6 +133,23 @@ export function AdvancedSettings({ t, useConfig, loadConfig, saveConfig, level, 
     const notice = snapshot.notice === undefined ? undefined : configNoticeView(snapshot.notice, t)
     return (
       <>
+        <div className="mcb-field" data-setting="timeAwareness">
+          <label className="mcb-check">
+            <input
+              type="checkbox"
+              checked={draft.timeAwareness}
+              disabled={locked}
+              aria-describedby={timeAwarenessHintId}
+              onChange={(event) => {
+                const checked = event.target.checked
+                update(current => ({ ...current, timeAwareness: checked }))
+              }}
+            />
+            <span className="mcb-choice-title">{t('advTimeAwareness')}</span>
+          </label>
+          <p className="mcb-hint" id={timeAwarenessHintId}>{t('advTimeAwarenessHint')}</p>
+        </div>
+
         <fieldset className="mcb-group">
           <legend className="mcb-group-title">{t('advSummarizerTitle')}</legend>
           <div className="mcb-fields" data-fields="summary">
